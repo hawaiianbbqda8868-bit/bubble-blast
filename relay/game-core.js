@@ -255,7 +255,8 @@ function makeWorld() {
     for(const p of players){
       if(!p.alive) continue;
       const {x,y}=tileOf(p);
-      const hits=blasts.filter(bl=>bl.x===x&&bl.y===y&&bl.owner!==p);
+      // a bubble traps everyone incl. its owner — but bots ignore their OWN blast so the AI doesn't suicide
+      const hits=blasts.filter(bl=>bl.x===x&&bl.y===y&&(p.isHuman||bl.owner!==p));
       if(!hits.length) continue;
       if(p.trapped){ if(hits.some(h=>h.id!==p.trappedBy)){ p.alive=false; events.push('pop'); } }
       else { p.trapped=true; p.trappedBy=hits[0].id; p.trapTimer=TRAP_TIME; p.struggle=0;

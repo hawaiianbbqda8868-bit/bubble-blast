@@ -707,8 +707,8 @@ function update(dt){
   for(const p of players){
     if(!p.alive) continue;
     const {x,y}=tileOf(p);
-    // your OWN bubble never catches you — only rivals' blasts trap/pop you
-    const hits=blasts.filter(bl=>bl.x===x&&bl.y===y&&bl.owner!==p);
+    // a bubble traps everyone incl. its owner; bots ignore their OWN blast (so the AI doesn't suicide)
+    const hits=blasts.filter(bl=>bl.x===x&&bl.y===y&&(p.isHuman||bl.owner!==p));
     if(!hits.length) continue;
     if(p.trapped){
       if(hits.some(h=>h.id!==p.trappedBy)){
