@@ -1,5 +1,7 @@
-// Offline cache so the game works with no internet once loaded.
-const CACHE = 'bnb-v18';
+// Network-first for the app shell so players always get the latest client
+// when online (prevents online version drift between devices); cache is just
+// the offline fallback for single-player.
+const CACHE = 'bnb-v19';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', e => {
@@ -12,5 +14,16 @@ self.addEventListener('activate', e => {
   );
 });
 self.addEventListener('fetch', e => {
-  e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
+  const req = e.request;
+  const url = new URL(req.url);
+  const isShell = req.mode === 'navigate' || url.pathname.endsWith('/') || url.pathname.endsWith('/index.html');
+  if (isShell) {
+    // always try the network first; fall back to cache when offline
+    e.respondWith(
+      fetch(req).then(r => { const c = r.clone(); caches.open(CACHE).then(ca => ca.put('./index.html', c)); return r; })
+        .catch(() => caches.match(req).then(r => r || caches.match('./index.html')))
+    );
+  } else {
+    e.respondWith(caches.match(req).then(r => r || fetch(req)));
+  }
 });

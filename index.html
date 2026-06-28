@@ -83,6 +83,7 @@
   .sw { width:34px; height:34px; border-radius:50%; cursor:pointer; border:3px solid transparent;
     box-shadow:0 2px 6px rgba(0,0,0,.4); transition:transform .1s; }
   .sw.sel { border-color:#fff; transform:scale(1.18); }
+  #ver { position:fixed; bottom:7px; right:10px; z-index:60; font-size:11px; color:rgba(255,255,255,.32); }
 </style>
 </head>
 <body>
@@ -90,6 +91,7 @@
 
 <button id="mute">🔊</button>
 <button id="menuBtn">≡ Menu</button>
+<div id="ver"></div>
 
 <div class="pad" id="stick"><div id="knob"></div></div>
 <div class="pad" id="bombwrap"><button id="bomb">🫧</button></div>
@@ -161,6 +163,7 @@
 
 <script>
 // ====================== CONFIG ======================
+const APP_VERSION = 'v19';
 const COLS = 19, ROWS = 17, TILE = 40;
 const FUSE = 2.0;        // bubble fuse seconds
 const BLAST_TIME = 0.5;  // water lasts
@@ -996,6 +999,7 @@ function loop(ts){
 
 // initial paint: build a map for the menu backdrop
 buildMap(); players=[]; bubbles=[]; blasts=[]; powerups=[];
+document.getElementById('ver').textContent=APP_VERSION;
 requestAnimationFrame(loop);
 
 // register service worker for offline play (ignored when opened as a local file)
