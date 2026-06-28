@@ -18,12 +18,13 @@
 
   /* Touch controls */
   .pad { position:fixed; bottom:24px; z-index:20; opacity:.92; }
-  #dpad { left:24px; width:168px; height:168px; }
-  #dpad button { position:absolute; width:56px; height:56px; border:none; border-radius:14px;
-    background:rgba(255,255,255,.14); color:#fff; font-size:24px; backdrop-filter:blur(4px);
-    box-shadow:0 2px 6px rgba(0,0,0,.4); }
-  #dpad button:active { background:rgba(255,255,255,.34); }
-  #up{left:56px;top:0}#down{left:56px;top:112px}#left{left:0;top:56px}#right{left:112px;top:56px}
+  #stick { left:24px; width:152px; height:152px; border-radius:50%;
+    background:rgba(255,255,255,.10); border:2px solid rgba(255,255,255,.18);
+    backdrop-filter:blur(4px); box-shadow:0 2px 10px rgba(0,0,0,.4); }
+  #knob { position:absolute; left:50%; top:50%; width:66px; height:66px; margin:-33px 0 0 -33px;
+    border-radius:50%; background:radial-gradient(circle at 40% 35%, #eaf6ff, #9fc3e6);
+    box-shadow:0 3px 12px rgba(0,0,0,.45), inset 0 2px 5px rgba(255,255,255,.6);
+    transition:transform .03s linear; }
   #bombwrap { right:24px; }
   #bomb { width:108px; height:108px; border:none; border-radius:50%; font-size:46px;
     background:radial-gradient(circle at 40% 35%, #5fd0ff, #2a7fd6); color:#fff;
@@ -60,10 +61,7 @@
 
 <button id="mute">🔊</button>
 
-<div class="pad" id="dpad">
-  <button id="up">▲</button><button id="left">◀</button>
-  <button id="right">▶</button><button id="down">▼</button>
-</div>
+<div class="pad" id="stick"><div id="knob"></div></div>
 <div class="pad" id="bombwrap"><button id="bomb">🫧</button></div>
 
 <div class="overlay" id="startScreen">
@@ -89,7 +87,7 @@ const COLS = 15, ROWS = 13, TILE = 40;
 const FUSE = 2.0;        // bubble fuse seconds
 const BLAST_TIME = 0.5;  // water lasts
 const TRAP_TIME = 2.6;   // trapped-in-bubble duration
-const BASE_MOVE = 0.17;  // sec per tile (player)
+const BASE_MOVE = 0.125; // sec per tile (player) — snappy
 const POWERUP_CHANCE = 0.36;
 const BARREL_FILL = 0.78;
 
@@ -183,7 +181,7 @@ function makePlayer(tx,ty,isHuman,botColor,botDiff){
     isHuman, color:isHuman?COLORS.player:botColor, alive:true,
     range:1, maxBubbles:1, active:0, speed:0,
     trapped:false, trappedBy:null, trapTimer:0,
-    botDiff, think:0, anim:0 };
+    botDiff, think:0, anim:0, target:null, targetTtl:0 };
 }
 
 // ====================== RESET / START ======================
@@ -199,9 +197,9 @@ function reset(){
 }
 // difficulty per bot, blended with chosen level so "mixed" feels varied
 function botPlan(i){
-  const base = {easy:{move:0.27,trap:0.35,react:0.55},
-                normal:{move:0.21,trap:0.7,react:0.85},
-                hard:{move:0.16,trap:1,react:1}}[diff];
+  const base = {easy:{move:0.23,trap:0.5,react:0.6},
+                normal:{move:0.18,trap:0.8,react:0.9},
+                hard:{move:0.14,trap:1,react:1}}[diff];
   const spice=[{move:+0.05,trap:-0.15},{move:0,trap:0},{move:-0.03,trap:+0.1}][i];
   return { move:Math.max(0.1,base.move+spice.move),
            trap:Math.min(1,Math.max(0,base.trap+spice.trap)),
@@ -245,8 +243,29 @@ function bindBtn(id,onDown,onUp){
   el.addEventListener('pointerleave',e=>{onUp&&onUp();});
   el.addEventListener('pointercancel',e=>{onUp&&onUp();});
 }
-['up','down','left','right'].forEach(d=>bindBtn(d,()=>pressDir(d),()=>releaseDir(d)));
 bindBtn('bomb',()=>{ wantBubble=true; });
+
+// Analog joystick: drag the knob; angle picks the move direction (held until released).
+(function(){
+  const base=document.getElementById('stick'), knob=document.getElementById('knob');
+  const R=52, DEAD=14; let active=false, cur=null;
+  const setKnob=(dx,dy)=> knob.style.transform=`translate(${dx}px,${dy}px)`;
+  function handle(cx,cy){
+    const r=base.getBoundingClientRect();
+    let dx=cx-(r.left+r.width/2), dy=cy-(r.top+r.height/2);
+    const mag=Math.hypot(dx,dy)||1;
+    if(mag>R){ dx=dx/mag*R; dy=dy/mag*R; }
+    setKnob(dx,dy);
+    let d=null;
+    if(mag>DEAD) d = Math.abs(dx)>Math.abs(dy) ? (dx>0?'right':'left') : (dy>0?'down':'up');
+    if(d!==cur){ cur=d; held.length=0; if(d){ held.push(d); mashEscape(); } }
+  }
+  base.addEventListener('pointerdown',e=>{ active=true; base.setPointerCapture(e.pointerId); handle(e.clientX,e.clientY); e.preventDefault(); });
+  base.addEventListener('pointermove',e=>{ if(active){ handle(e.clientX,e.clientY); e.preventDefault(); } });
+  const end=()=>{ active=false; cur=null; held.length=0; setKnob(0,0); };
+  base.addEventListener('pointerup',end);
+  base.addEventListener('pointercancel',end);
+})();
 
 document.getElementById('playBtn').onclick=startGame;
 document.getElementById('againBtn').onclick=startGame;
@@ -310,58 +329,100 @@ function lineClear(x1,y1,x2,y2){
     for(let x=a+1;x<b;x++) if(grid[y1][x]!==FLOOR) return false; return true; }
   return false;
 }
-function dirToTile(dx,dy){ return dx>0?'right':dx<0?'left':dy>0?'down':'up'; }
+// nearest tile (returns the goal tile itself, or null) via BFS over canEnter tiles
+function nearestTile(sx,sy,pred,canEnter){
+  if(pred(sx,sy)) return {x:sx,y:sy};
+  const q=[[sx,sy]], seen=new Set([key(sx,sy)]);
+  const dirs=[[0,-1],[0,1],[-1,0],[1,0]];
+  while(q.length){
+    const [cx,cy]=q.shift();
+    for(const [dx,dy] of dirs){
+      const nx=cx+dx, ny=cy+dy, k=key(nx,ny);
+      if(seen.has(k)||!inB(nx,ny)||!canEnter(nx,ny)) continue;
+      seen.add(k); if(pred(nx,ny)) return {x:nx,y:ny}; q.push([nx,ny]);
+    }
+  }
+  return null;
+}
+// Can a bubble dropped at (x,y) be survived? You may RUN ALONG the blast line —
+// you just need to reach a tile beyond it before it pops (2s is plenty).
+function escapeExists(p,x,y,danger){
+  const cross=new Set(blastCells(x,y,p.range).map(c=>key(c.x,c.y)));
+  return !!bfsStep(x,y,
+    (gx,gy)=>!cross.has(key(gx,gy)) && !danger.has(key(gx,gy)),
+    (nx,ny)=>passable(nx,ny) && !danger.has(key(nx,ny)));
+}
+function adjacentBarrel(x,y){
+  return [[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>{
+    const bx=x+dx,by=y+dy; return inB(bx,by)&&grid[by][bx]===BARREL; });
+}
+function pickTarget(p,x,y,danger){
+  const canEnter=(nx,ny)=>passable(nx,ny)&&!danger.has(key(nx,ny));
+  // grab a nearby power-up
+  let t=nearestTile(x,y,(gx,gy)=>powerups.some(pu=>pu.x===gx&&pu.y===gy),canEnter);
+  if(t) return t;
+  // a tile beside a barrel we can safely bomb from
+  t=nearestTile(x,y,(gx,gy)=>adjacentBarrel(gx,gy)&&escapeExists(p,gx,gy,danger),canEnter);
+  if(t) return t;
+  return null;
+}
+// first step toward (tx,ty) TREATING BARRELS AS PASSABLE — used to dig toward the player
+function digStep(sx,sy,tx,ty,danger){
+  return bfsStep(sx,sy,(gx,gy)=>gx===tx&&gy===ty,
+    (nx,ny)=> inB(nx,ny) && grid[ny][nx]!==WALL && !bubbleAt(nx,ny) && !danger.has(key(nx,ny)));
+}
 
 function botAct(p, danger){
-  const {x,y}=tileOf(p);
-  const safe=(nx,ny)=> passable(nx,ny) && !danger.has(key(nx,ny));
+  const here=tileOf(p), x=here.x, y=here.y;
 
-  // 1) In danger? flee to nearest safe tile.
+  // 1) standing in danger -> run to the nearest safe tile (may run through the blast line)
   if(danger.has(key(x,y))){
-    const dir=bfsStep(x,y, (gx,gy)=>!danger.has(key(gx,gy)),
-                          (nx,ny)=>passable(nx,ny));
-    return {dir, bubble:false};
+    p.target=null;
+    return { dir: bfsStep(x,y,(gx,gy)=>!danger.has(key(gx,gy)),(nx,ny)=>passable(nx,ny)), bubble:false };
   }
 
-  // escape check for placing a bubble here
-  const future=new Set(blastCells(x,y,p.range).map(c=>key(c.x,c.y)));
-  const hasEscape=[[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>{
-    const nx=x+dx,ny=y+dy; return safe(nx,ny) && !future.has(key(nx,ny));
-  });
-
-  // 2) Try to trap the human if lined up & in range.
   const me=players[0];
-  if(me.alive && p.active<p.maxBubbles && hasEscape && Math.random()<p.botDiff.trap){
-    const mt=tileOf(me);
-    const aligned=(mt.x===x||mt.y===y);
-    const dist=Math.abs(mt.x-x)+Math.abs(mt.y-y);
-    if(aligned && dist<=p.range && dist>0 && lineClear(x,y,mt.x,mt.y))
-      return {dir:null, bubble:true};
+  const mt = me.alive ? tileOf(me) : null;
+  const canBomb = p.active<p.maxBubbles && escapeExists(p,x,y,danger);
+
+  // 2) ATTACK: already lined up with the player within range -> bomb them
+  if(mt && canBomb && (mt.x===x||mt.y===y)
+     && Math.abs(mt.x-x)+Math.abs(mt.y-y)<=p.range && lineClear(x,y,mt.x,mt.y)
+     && Math.random()<p.botDiff.trap){
+    p.target=null; return { dir:null, bubble:true };
   }
 
-  // 3) Adjacent to a barrel? blast it (farm power-ups).
-  if(p.active<p.maxBubbles && hasEscape){
-    const adjBarrel=[[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>{
-      const nx=x+dx,ny=y+dy; return inB(nx,ny)&&grid[ny][nx]===BARREL; });
-    if(adjBarrel && Math.random()<0.6) return {dir:null, bubble:true};
+  // 3) HUNT: advance toward the player, blasting through any barrel in the way
+  if(mt && Math.random()<p.botDiff.react){
+    const d=digStep(x,y,mt.x,mt.y,danger);
+    if(d){
+      const [dx,dy]=DIRV[d], nx=x+dx, ny=y+dy;
+      if(grid[ny][nx]===BARREL){
+        if(canBomb && Math.random()<p.botDiff.trap){ p.target=null; return { dir:null, bubble:true }; }
+        // can't safely blast right now -> fall through to farming
+      } else { p.target=null; return { dir:d, bubble:false }; }
+    }
   }
 
-  // 4) Move toward goal: a power-up, else a barrel-adjacent tile, else the player, else wander.
-  const canEnter=(nx,ny)=>safe(nx,ny);
-  let dir = bfsStep(x,y,(gx,gy)=>powerups.some(pu=>pu.x===gx&&pu.y===gy), canEnter);
-  if(!dir){
-    dir = bfsStep(x,y,(gx,gy)=>[[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>{
-      const bx=gx+dx,by=gy+dy; return inB(bx,by)&&grid[by][bx]===BARREL; }), canEnter);
+  // 4) FARM: bomb an adjacent barrel, else head to a committed target (persisted -> no jitter)
+  if(canBomb && adjacentBarrel(x,y) && Math.random()<p.botDiff.trap){ p.target=null; return { dir:null, bubble:true }; }
+  if(!p.target || (p.target.x===x&&p.target.y===y) || p.targetTtl<=0
+     || !passable(p.target.x,p.target.y)){
+    p.target = pickTarget(p,x,y,danger);
+    p.targetTtl = 50;
   }
-  if(!dir && me.alive && Math.random()<p.botDiff.react){
-    const mt=tileOf(me);
-    dir = bfsStep(x,y,(gx,gy)=>gx===mt.x&&gy===mt.y, canEnter);
-  }
-  if(!dir){ // wander
-    const opts=[[1,0,'right'],[-1,0,'left'],[0,1,'down'],[0,-1,'up']].filter(([dx,dy])=>safe(x+dx,y+dy));
+  p.targetTtl--;
+  let dir=null;
+  if(p.target)
+    dir=bfsStep(x,y,(gx,gy)=>gx===p.target.x&&gy===p.target.y,
+                    (nx,ny)=>passable(nx,ny)&&!danger.has(key(nx,ny)));
+  if(!dir){ // nothing reachable -> drift to a random safe neighbour
+    p.target=null;
+    const opts=[[1,0,'right'],[-1,0,'left'],[0,1,'down'],[0,-1,'up']]
+      .filter(([dx,dy])=>passable(x+dx,y+dy)&&!danger.has(key(x+dx,y+dy)));
     if(opts.length) dir=opts[Math.floor(Math.random()*opts.length)][2];
   }
-  return {dir, bubble:false};
+  return { dir, bubble:false };
 }
 
 // ====================== UPDATE ======================
