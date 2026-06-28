@@ -84,6 +84,10 @@
     box-shadow:0 2px 6px rgba(0,0,0,.4); transition:transform .1s; }
   .sw.sel { border-color:#fff; transform:scale(1.18); }
   #ver { position:fixed; bottom:7px; right:10px; z-index:60; font-size:11px; color:rgba(255,255,255,.32); }
+  .stepper { display:flex; align-items:center; gap:18px; }
+  .stepbtn { width:46px; height:46px; border:none; border-radius:50%; background:rgba(255,255,255,.16); color:#fff; font-size:26px; font-weight:700; cursor:pointer; }
+  .stepbtn:active { background:rgba(255,255,255,.34); }
+  .botnum { font-size:28px; font-weight:800; color:#ffe27a; min-width:30px; text-align:center; }
 </style>
 </head>
 <body>
@@ -117,6 +121,8 @@
       <div class="diff sel" data-d="normal">Normal</div>
       <div class="diff" data-d="hard">Hard</div>
     </div>
+    <div class="status">Bots:</div>
+    <div class="stepper"><button class="stepbtn" data-bot="-">−</button><span class="botnum">3</span><button class="stepbtn" data-bot="+">+</button></div>
     <button class="play" id="playBtn">PLAY ▶</button>
     <button class="smallbtn" data-back>← back</button>
   </div>
@@ -124,14 +130,10 @@
   <div class="panel" id="hostPanel">
     <div class="status">Your room code — share it with friends:</div>
     <div class="code" id="roomCode">…</div>
-    <div class="lobby" id="hostLobby">Sailors: 1 / 4</div>
-    <div class="status">Players in game:</div>
-    <div class="diffrow" id="maxRow">
-      <div class="diff" data-max="2">2P</div>
-      <div class="diff" data-max="3">3P</div>
-      <div class="diff sel" data-max="4">4P</div>
-    </div>
-    <div class="status">Difficulty (for any bots):</div>
+    <div class="lobby" id="hostLobby">Humans: 1 / 8 · Bots: 3</div>
+    <div class="status">Bots (humans fill the rest, up to 8 total):</div>
+    <div class="stepper"><button class="stepbtn" data-bot="-">−</button><span class="botnum">3</span><button class="stepbtn" data-bot="+">+</button></div>
+    <div class="status">Difficulty (for the bots):</div>
     <div class="diffrow">
       <div class="diff" data-d="easy">Easy</div>
       <div class="diff sel" data-d="normal">Normal</div>
@@ -163,7 +165,7 @@
 
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v19';
+const APP_VERSION = 'v20';
 const COLS = 19, ROWS = 17, TILE = 40;
 const FUSE = 2.0;        // bubble fuse seconds
 const BLAST_TIME = 0.5;  // water lasts
@@ -179,6 +181,7 @@ const PU_RANGE=0, PU_BUBBLE=1, PU_SPEED=2;
 const SKIN='#fde7cf', SKIN_LT='#fff8ee';   // characters are cream-bodied
 const PALETTE = ['#ff5b5b','#ff9d3a','#ffe24d','#5fe08a','#46c8ff','#7c8cff','#c77dff','#ff7ad1'];
 let myColor = (function(){ try{ return localStorage.getItem('bnbColor')||PALETTE[0]; }catch(e){ return PALETTE[0]; } })();
+const SPAWNS=[[1,1],[COLS-2,1],[1,ROWS-2],[COLS-2,ROWS-2],[(COLS-1)>>1,1],[(COLS-1)>>1,ROWS-2],[1,(ROWS-1)>>1],[COLS-2,(ROWS-1)>>1]];
 
 // ====================== STATE ======================
 const cv = document.getElementById('cv');
@@ -256,12 +259,11 @@ function buildMap(){
   for(const [x,y] of [[2,2],[COLS-3,2],[2,ROWS-3],[COLS-3,ROWS-3]]){
     grid[y][x]=WALL; cannonSet.add(key(x,y));
   }
-  // spawn safe zones (keep an L clear at each corner)
+  // spawn safe zones (keep an L clear at each spawn)
   const safe = new Set();
-  const corners=[[1,1],[COLS-2,1],[1,ROWS-2],[COLS-2,ROWS-2]];
-  for(const [cx,cy] of corners){
+  for(const [cx,cy] of SPAWNS){
     [[0,0],[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{
-      const x=cx+dx, y=cy+dy; if(inB(x,y)) safe.add(key(x,y));
+      const x=cx+dx, y=cy+dy; if(inB(x,y)&&grid[y][x]!==WALL) safe.add(key(x,y));
     });
   }
   // everything else is a destructible crate -> the whole map can be cleared
@@ -285,15 +287,16 @@ function reset(controls, colors){
   colors = colors || [];
   buildMap();
   bubbles=[]; blasts=[]; powerups=[]; burstCounter=0;
-  const spawns=[[1,1],[COLS-2,1],[1,ROWS-2],[COLS-2,ROWS-2]];
   const used=new Set(colors.filter(Boolean));
   const botPool=PALETTE.filter(c=>!used.has(c));
   let bi=0, bp=0;
-  players=spawns.map((s,i)=>{
-    const ctrl=controls[i]||'ai';
+  players=SPAWNS.map((s,i)=>{
+    const ctrl=controls[i]||'none';
+    const aiLike=(ctrl==='ai'||ctrl==='none');
     let cap=colors[i] || botPool[bp++ % botPool.length] || PALETTE[i%PALETTE.length];
-    const p=makePlayer(s[0],s[1], ctrl!=='ai', cap, ctrl==='ai'?botPlan(bi++%3):null);
+    const p=makePlayer(s[0],s[1], !aiLike, cap, aiLike?botPlan(bi++%3):null);
     p.control=ctrl; p.slot=i; p.captain=false; p.inHeld=[]; p.inBomb=false; p._lastHeld=null;
+    if(ctrl==='none') p.alive=false;
     return p;
   });
 }
@@ -319,7 +322,10 @@ function showResult(win){
   document.getElementById('overScreen').classList.remove('hidden');
   win ? sfx.win() : sfx.lose();
 }
-function startGame(){ netRole='off'; mySlot=0; reset(['local','ai','ai','ai'],[myColor]); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
+function startGame(){ netRole='off'; mySlot=0;
+  const n=Math.max(1,Math.min(7,botCount));            // single-player needs at least 1 bot
+  const controls=['local']; for(let i=0;i<n;i++) controls.push('ai'); while(controls.length<8) controls.push('none');
+  reset(controls, [myColor]); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
 function endGame(win){ state='over'; showResult(win); }
 
 // ====================== INPUT ======================
@@ -390,12 +396,9 @@ document.querySelectorAll('.diff[data-d]').forEach(el=>el.onclick=()=>{
   diff=el.dataset.d;
   document.querySelectorAll('.diff[data-d]').forEach(x=>x.classList.toggle('sel', x.dataset.d===diff));
 });
-document.querySelectorAll('[data-max]').forEach(el=>el.onclick=()=>{
-  maxPlayers=+el.dataset.max;
-  document.querySelectorAll('[data-max]').forEach(x=>x.classList.toggle('sel', x===el));
-  if(netRole==='host') wsSend({k:'setmax', max:maxPlayers});
-});
-function syncMaxSel(){ document.querySelectorAll('[data-max]').forEach(x=>x.classList.toggle('sel', +x.dataset.max===maxPlayers)); }
+function syncBots(){ document.querySelectorAll('.botnum').forEach(e=>e.textContent=botCount); }
+function setBots(n){ botCount=Math.max(0,Math.min(7,n)); syncBots(); if(netRole==='host') wsSend({k:'setbots', bots:botCount}); }
+document.querySelectorAll('[data-bot]').forEach(b=>b.onclick=()=>setBots(botCount+(b.dataset.bot==='+'?1:-1)));
 document.getElementById('mute').onclick=function(){ muted=!muted; this.textContent=muted?'🔇':'🔊'; };
 
 // ---- start-screen mode switching ----
@@ -907,7 +910,7 @@ function render(){
 
 // ====================== NETWORK (authoritative game server on Railway) ======================
 const RELAY_URL='wss://bubble-blast-relay-production.up.railway.app';
-let browseWs=null, browseTimer=null, lastInDir='_', lastInT=0, maxPlayers=4;
+let browseWs=null, browseTimer=null, lastInDir='_', lastInT=0, botCount=3;
 function rid(){ return Math.random().toString(36).slice(2,9); }
 function wsSend(o){ if(ws && ws.readyState===1){ try{ ws.send(JSON.stringify(o)); }catch(e){} } }
 function leaveNet(){ try{ if(ws) ws.close(); }catch(e){} ws=null; netRole='off'; mySlot=0; }
@@ -919,9 +922,9 @@ function onServerMsg(ev){
     if(netRole==='host'){ document.getElementById('roomCode').textContent=d.code; document.getElementById('hostStatus').textContent='Share the code, then tap START.'; }
     else document.getElementById('joinStatus').textContent='Joined as Sailor '+(mySlot+1)+'! Waiting for host to start…';
   }
-  else if(d.k==='lobby'){ if(d.max) maxPlayers=d.max;
-    const el=document.getElementById('hostLobby'); if(el) el.textContent='Sailors: '+d.n+' / '+maxPlayers+'   (empty seats = bots)';
-    if(netRole==='client' && state!=='playing'){ const js=document.getElementById('joinStatus'); if(js) js.textContent='In the lobby — '+d.n+' sailor(s). Waiting for host to start…'; } }
+  else if(d.k==='lobby'){ if(typeof d.bots==='number'){ botCount=d.bots; syncBots(); }
+    const el=document.getElementById('hostLobby'); if(el) el.textContent='Humans: '+d.n+' / '+d.cap+'   ·   Bots: '+d.bots;
+    if(netRole==='client' && state!=='playing'){ const js=document.getElementById('joinStatus'); if(js) js.textContent='In the lobby — '+d.n+' human(s) + '+d.bots+' bots. Waiting for host…'; } }
   else if(d.k==='joinfail'){ document.getElementById('joinStatus').textContent=d.reason||'Could not join.'; netRole='off'; }
   else if(d.k==='start'){ applyMap(d); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
   else if(d.k==='state'){ applySnapshot(d); }
@@ -932,10 +935,10 @@ function connectServer(onOpen){ ws=new WebSocket(RELAY_URL); ws.onopen=onOpen; w
 // ---- HOST (a client that can pick player count + press START) ----
 function hostGame(){
   document.getElementById('hostStatus').textContent='Connecting…'; document.getElementById('roomCode').textContent='…';
-  netRole='host'; mySlot=0; syncMaxSel();
-  connectServer(()=>wsSend({k:'create', cid:rid(), color:myColor, max:maxPlayers}));
+  netRole='host'; mySlot=0; syncBots();
+  connectServer(()=>wsSend({k:'create', cid:rid(), color:myColor, bots:botCount}));
 }
-function hostStart(){ wsSend({k:'start', diff, max:maxPlayers}); }
+function hostStart(){ wsSend({k:'start', diff, bots:botCount}); }
 
 // ---- CLIENT (joiner) ----
 function joinGame(){

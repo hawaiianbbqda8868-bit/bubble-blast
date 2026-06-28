@@ -12,6 +12,10 @@ const PU_RANGE = 0, PU_BUBBLE = 1, PU_SPEED = 2;
 const SKIN = '#fde7cf', SKIN_LT = '#fff8ee';
 const PALETTE = ['#ff5b5b','#ff9d3a','#ffe24d','#5fe08a','#46c8ff','#7c8cff','#c77dff','#ff7ad1'];
 const DIRV = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
+// up to 8 sailors: 4 corners + 4 edge-midpoints
+const SPAWNS = [[1,1],[COLS-2,1],[1,ROWS-2],[COLS-2,ROWS-2],
+                [(COLS-1)>>1,1],[(COLS-1)>>1,ROWS-2],[1,(ROWS-1)>>1],[COLS-2,(ROWS-1)>>1]];
+const MAX_SLOTS = SPAWNS.length;
 
 function makeWorld() {
   let grid, players, bubbles, blasts, powerups, cannonSet, shipSet, shipCenter;
@@ -46,8 +50,8 @@ function makeWorld() {
       const x=shipCenter.x+dx, y=shipCenter.y+dy; grid[y][x]=WALL; shipSet.add(key(x,y));
     }
     for(const [x,y] of [[2,2],[COLS-3,2],[2,ROWS-3],[COLS-3,ROWS-3]]){ grid[y][x]=WALL; cannonSet.add(key(x,y)); }
-    const safe=new Set(), corners=[[1,1],[COLS-2,1],[1,ROWS-2],[COLS-2,ROWS-2]];
-    for(const [cx,cy] of corners) [[0,0],[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{ const x=cx+dx,y=cy+dy; if(inB(x,y)) safe.add(key(x,y)); });
+    const safe=new Set();
+    for(const [cx,cy] of SPAWNS) [[0,0],[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{ const x=cx+dx,y=cy+dy; if(inB(x,y)&&grid[y][x]!==WALL) safe.add(key(x,y)); });
     for(let y=1;y<ROWS-1;y++) for(let x=1;x<COLS-1;x++)
       if(grid[y][x]===FLOOR && !safe.has(key(x,y)) && Math.random()<BARREL_FILL) grid[y][x]=BARREL;
   }
@@ -72,11 +76,10 @@ function makeWorld() {
     colors = colors || [];
     buildMap();
     bubbles=[]; blasts=[]; powerups=[]; burstCounter=0; gameState='playing'; winnerSlot=-1; events=[];
-    const spawns=[[1,1],[COLS-2,1],[1,ROWS-2],[COLS-2,ROWS-2]];
     const used=new Set(colors.filter(Boolean));
     const botPool=PALETTE.filter(c=>!used.has(c));
     let bi=0, bp=0;
-    players=spawns.map((s,i)=>{
+    players=SPAWNS.map((s,i)=>{
       const ctrl=controls[i]||'ai';
       const cap=colors[i] || botPool[bp++ % botPool.length] || PALETTE[i%PALETTE.length];
       const aiLike=(ctrl==='ai'||ctrl==='none');
@@ -293,7 +296,7 @@ function makeWorld() {
 }
 
 const API = { makeWorld, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE,
-  FLOOR, WALL, BARREL, PALETTE, DIRV, SKIN, SKIN_LT };
+  FLOOR, WALL, BARREL, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : null));

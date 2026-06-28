@@ -19,12 +19,13 @@ const rooms = new Map(); // code -> { code, conns:[{ws,cid,slot,color}], state, 
 function makeCode(){ const c='ABCDEFGHJKMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<4;i++) s+=c[Math.floor(Math.random()*c.length)]; return s; }
 function send(ws, o){ if(ws.readyState===1){ try{ ws.send(JSON.stringify(o)); }catch(e){} } }
 function broadcast(room, o){ const s=JSON.stringify(o); for(const c of room.conns) if(c.ws.readyState===1){ try{ c.ws.send(s); }catch(e){} } }
-function lobbyInfo(room){ return { k:'lobby', code:room.code, n:room.conns.length, max:room.max, state:room.state }; }
+const N_SLOTS = BB.MAX_SLOTS; // 8
+function lobbyInfo(room){ return { k:'lobby', code:room.code, n:room.conns.length, bots:room.bots, cap:N_SLOTS-room.bots, state:room.state }; }
 function buildControls(room){
-  const max = room.max || 4;
-  const controls = ['none','none','none','none'], colors = [];
-  for(let s=0;s<max;s++) controls[s]='ai';                 // active empty seats -> bots
-  for(const c of room.conns){ if(c.slot>=0 && c.slot<max){ controls[c.slot]='remote'; colors[c.slot]=c.color; } }
+  const controls = new Array(N_SLOTS).fill('none'), colors = [];
+  for(const c of room.conns){ if(c.slot>=0 && c.slot<N_SLOTS){ controls[c.slot]='remote'; colors[c.slot]=c.color; } } // humans
+  let need = room.bots || 0;
+  for(let s=0;s<N_SLOTS && need>0;s++){ if(controls[s]==='none'){ controls[s]='ai'; need--; } }              // bots into empty seats
   return { controls, colors };
 }
 function beginGame(room){
@@ -59,7 +60,7 @@ wss.on('connection', (ws) => {
     }
     if (m.k === 'create') {
       let code; do { code = makeCode(); } while (rooms.has(code));
-      const room = { code, conns:[], state:'lobby', world:null, tick:null, diff:'normal', max:Math.min(4,Math.max(2,m.max||4)) };
+      const room = { code, conns:[], state:'lobby', world:null, tick:null, diff:'normal', bots:Math.min(7,Math.max(0, m.bots==null?3:m.bots)) };
       rooms.set(code, room);
       ws.cid = m.cid; ws.roomCode = code; ws.slot = 0; ws.color = m.color || BB.PALETTE[0];
       room.conns.push({ ws, cid:ws.cid, slot:0, color:ws.color });
@@ -71,9 +72,9 @@ wss.on('connection', (ws) => {
       const room = rooms.get(String(m.code||'').toUpperCase());
       if (!room) { send(ws, { k:'joinfail', reason:'Room not found — check the code.' }); return; }
       if (room.state !== 'lobby') { send(ws, { k:'joinfail', reason:'That game already started.' }); return; }
-      if (room.conns.length >= room.max) { send(ws, { k:'joinfail', reason:'Room is full.' }); return; }
+      if (room.conns.length >= (N_SLOTS - room.bots)) { send(ws, { k:'joinfail', reason:'Room is full.' }); return; }
       const used = new Set(room.conns.map(c => c.slot));
-      let slot = -1; for (let s=1; s<=3; s++) if (!used.has(s)) { slot = s; break; }
+      let slot = -1; for (let s=0; s<N_SLOTS; s++) if (!used.has(s)) { slot = s; break; }
       if (slot < 0) { send(ws, { k:'joinfail', reason:'Room is full.' }); return; }
       ws.cid = m.cid; ws.roomCode = room.code; ws.slot = slot; ws.color = m.color || BB.PALETTE[slot % BB.PALETTE.length];
       room.conns.push({ ws, cid:ws.cid, slot, color:ws.color });
@@ -84,8 +85,8 @@ wss.on('connection', (ws) => {
 
     const room = rooms.get(ws.roomCode);
     if (!room) return;
-    if (m.k === 'setmax') { if (ws.slot === 0 && room.state === 'lobby') { room.max = Math.min(4, Math.max(2, Math.max(room.conns.length, m.max||4))); broadcast(room, lobbyInfo(room)); } return; }
-    if (m.k === 'start' || m.k === 'restart') { if (ws.slot === 0) { if (m.max) room.max = Math.min(4, Math.max(2, Math.max(room.conns.length, m.max))); beginGame(room); } return; }
+    if (m.k === 'setbots') { if (ws.slot === 0 && room.state === 'lobby') { room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots||0)); broadcast(room, lobbyInfo(room)); } return; }
+    if (m.k === 'start' || m.k === 'restart') { if (ws.slot === 0) { if (m.bots!=null) room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots)); beginGame(room); } return; }
     if (m.k === 'input') { if (room.world && room.state === 'playing') room.world.setInput(ws.slot, { dir:m.dir, bomb:m.bomb }); return; }
   });
   ws.on('close', () => {
