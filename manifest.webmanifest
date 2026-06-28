@@ -1,0 +1,14 @@
+{
+  "name": "泡泡堂 Bubble Blast",
+  "short_name": "泡泡堂",
+  "description": "Single-player 泡泡堂 / Crazy Arcade vs AI bots — pirate cove.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#0d1526",
+  "theme_color": "#1a2b4a",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

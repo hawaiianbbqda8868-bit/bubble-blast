@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1a2b4a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.svg">
+<title>泡泡堂 · Bubble Blast</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; -webkit-user-select:none; user-select:none; touch-action:none; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#0d1526; font-family:-apple-system,Segoe UI,Roboto,sans-serif; }
+  #game { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:radial-gradient(circle at 50% 30%, #1d3a5f 0%, #0d1526 80%); }
+  canvas { image-rendering:pixelated; box-shadow:0 0 40px rgba(0,0,0,.6); border-radius:6px; max-width:100%; max-height:100%; }
+
+  /* Touch controls */
+  .pad { position:fixed; bottom:24px; z-index:20; opacity:.92; }
+  #dpad { left:24px; width:168px; height:168px; }
+  #dpad button { position:absolute; width:56px; height:56px; border:none; border-radius:14px;
+    background:rgba(255,255,255,.14); color:#fff; font-size:24px; backdrop-filter:blur(4px);
+    box-shadow:0 2px 6px rgba(0,0,0,.4); }
+  #dpad button:active { background:rgba(255,255,255,.34); }
+  #up{left:56px;top:0}#down{left:56px;top:112px}#left{left:0;top:56px}#right{left:112px;top:56px}
+  #bombwrap { right:24px; }
+  #bomb { width:108px; height:108px; border:none; border-radius:50%; font-size:46px;
+    background:radial-gradient(circle at 40% 35%, #5fd0ff, #2a7fd6); color:#fff;
+    box-shadow:0 4px 14px rgba(0,0,0,.5), inset 0 2px 6px rgba(255,255,255,.4); }
+  #bomb:active { transform:scale(.93); }
+
+  /* Overlays */
+  .overlay { position:fixed; inset:0; z-index:50; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; color:#fff;
+    background:rgba(8,14,28,.86); backdrop-filter:blur(6px); padding:24px; }
+  .overlay.hidden { display:none; }
+  .title { font-size:clamp(38px,11vw,76px); font-weight:800; letter-spacing:2px;
+    background:linear-gradient(180deg,#9fe7ff,#3a9fe0); -webkit-background-clip:text; background-clip:text; color:transparent;
+    text-shadow:0 4px 18px rgba(0,0,0,.4); }
+  .subtitle { font-size:clamp(16px,4.5vw,24px); color:#bcd6f0; margin-top:4px; margin-bottom:6px; }
+  .hint { font-size:14px; color:#7e96b5; max-width:420px; line-height:1.6; margin-top:18px; }
+  .hint b { color:#cfe6ff; }
+  .play { margin-top:30px; padding:18px 54px; font-size:26px; font-weight:700; color:#06243a;
+    border:none; border-radius:40px; background:linear-gradient(180deg,#ffe27a,#ffb84d);
+    box-shadow:0 6px 20px rgba(0,0,0,.45); cursor:pointer; }
+  .play:active { transform:translateY(2px); }
+  .result { font-size:clamp(42px,13vw,92px); font-weight:900; }
+  .win { color:#ffd24d; } .lose { color:#ff6b6b; }
+  .diffrow { display:flex; gap:12px; margin-top:24px; }
+  .diff { padding:10px 18px; border-radius:30px; border:2px solid rgba(255,255,255,.25);
+    background:rgba(255,255,255,.06); color:#cfe6ff; font-size:16px; }
+  .diff.sel { border-color:#ffe27a; background:rgba(255,226,122,.16); color:#fff; }
+  #mute { position:fixed; top:16px; right:16px; z-index:40; width:46px; height:46px; border:none;
+    border-radius:50%; background:rgba(255,255,255,.12); color:#fff; font-size:22px; }
+</style>
+</head>
+<body>
+<div id="game"><canvas id="cv"></canvas></div>
+
+<button id="mute">🔊</button>
+
+<div class="pad" id="dpad">
+  <button id="up">▲</button><button id="left">◀</button>
+  <button id="right">▶</button><button id="down">▼</button>
+</div>
+<div class="pad" id="bombwrap"><button id="bomb">🫧</button></div>
+
+<div class="overlay" id="startScreen">
+  <div class="title">泡泡堂</div>
+  <div class="subtitle">Bubble Blast · 海盗 Pirate Cove</div>
+  <div class="diffrow">
+    <div class="diff" data-d="easy">Easy</div>
+    <div class="diff sel" data-d="normal">Normal</div>
+    <div class="diff" data-d="hard">Hard</div>
+  </div>
+  <button class="play" id="playBtn">PLAY ▶</button>
+  <div class="hint">Trap a rival in your <b>water bubble</b> 🫧, then pop the bubble with another blast to knock them out. Grab <b>💧 range</b>, <b>🫧 extra bubbles</b>, <b>👟 speed</b>. Last sailor standing wins!<br>Move: D-pad / arrow keys · Bubble: 🫧 / spacebar</div>
+</div>
+
+<div class="overlay hidden" id="overScreen">
+  <div class="result" id="resultText">YOU WIN</div>
+  <button class="play" id="againBtn">PLAY AGAIN ▶</button>
+</div>
+
+<script>
+// ====================== CONFIG ======================
+const COLS = 15, ROWS = 13, TILE = 40;
+const FUSE = 2.0;        // bubble fuse seconds
+const BLAST_TIME = 0.5;  // water lasts
+const TRAP_TIME = 2.6;   // trapped-in-bubble duration
+const BASE_MOVE = 0.17;  // sec per tile (player)
+const POWERUP_CHANCE = 0.36;
+const BARREL_FILL = 0.78;
+
+const FLOOR=0, WALL=1, BARREL=2;
+const PU_RANGE=0, PU_BUBBLE=1, PU_SPEED=2;
+
+const COLORS = {
+  player:'#ffd24d', bot:['#ff6b6b','#5fe08a','#7db4ff'],
+};
+
+// ====================== STATE ======================
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+cv.width = COLS*TILE; cv.height = ROWS*TILE;
+
+let grid, players, bubbles, blasts, powerups, state='start', diff='normal';
+let burstCounter = 0, muted=false;
+let last = 0;
+
+// ====================== AUDIO (tiny WebAudio) ======================
+let actx=null;
+function beep(freq, dur, type, vol){
+  if(muted) return;
+  try{
+    actx = actx || new (window.AudioContext||window.webkitAudioContext)();
+    const o=actx.createOscillator(), g=actx.createGain();
+    o.type=type||'square'; o.frequency.value=freq;
+    g.gain.value=(vol||0.05); o.connect(g); g.connect(actx.destination);
+    o.start(); g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime+(dur||0.1));
+    o.stop(actx.currentTime+(dur||0.1)+0.02);
+  }catch(e){}
+}
+const sfx = {
+  place:()=>beep(520,0.08,'sine',0.05),
+  burst:()=>{beep(150,0.18,'sawtooth',0.07); beep(90,0.22,'square',0.05);},
+  power:()=>{beep(660,0.07,'square',0.06); setTimeout(()=>beep(990,0.09,'square',0.06),70);},
+  trap:()=>beep(300,0.15,'sine',0.06),
+  pop:()=>{beep(420,0.1,'square',0.07); setTimeout(()=>beep(180,0.16,'sawtooth',0.06),60);},
+  win:()=>[523,659,784,1046].forEach((f,i)=>setTimeout(()=>beep(f,0.18,'square',0.06),i*140)),
+  lose:()=>[392,330,262].forEach((f,i)=>setTimeout(()=>beep(f,0.22,'sawtooth',0.06),i*160)),
+};
+
+// ====================== HELPERS ======================
+const inB = (x,y)=> x>=0&&x<COLS&&y>=0&&y<ROWS;
+const key = (x,y)=> x+','+y;
+function bubbleAt(x,y){ return bubbles.find(b=>b.x===x&&b.y===y); }
+function passable(x,y){ return inB(x,y) && grid[y][x]===FLOOR && !bubbleAt(x,y); }
+function tileOf(p){ // tile an entity currently occupies (snap by move progress)
+  if(!p.moving) return {x:p.tx, y:p.ty};
+  return p.t<0.5 ? {x:p.fx, y:p.fy} : {x:p.tox, y:p.toy};
+}
+
+// water cells a blast at (x,y,range) would cover, stopping at walls/barrels
+function blastCells(x,y,range){
+  const cells=[{x,y}];
+  const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+  for(const [dx,dy] of dirs){
+    for(let i=1;i<=range;i++){
+      const nx=x+dx*i, ny=y+dy*i;
+      if(!inB(nx,ny)||grid[ny][nx]===WALL) break;
+      cells.push({x:nx,y:ny});
+      if(grid[ny][nx]===BARREL) break; // water destroys the barrel then stops
+    }
+  }
+  return cells;
+}
+
+// ====================== MAP ======================
+function buildMap(){
+  grid = Array.from({length:ROWS}, ()=>Array(COLS).fill(FLOOR));
+  for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
+    if(x===0||y===0||x===COLS-1||y===ROWS-1) grid[y][x]=WALL;       // border
+    else if(x%2===0 && y%2===0) grid[y][x]=WALL;                    // pillars
+  }
+  // spawn safe zones (keep an L clear at each corner)
+  const safe = new Set();
+  const corners=[[1,1],[COLS-2,1],[1,ROWS-2],[COLS-2,ROWS-2]];
+  for(const [cx,cy] of corners){
+    [[0,0],[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{
+      const x=cx+dx, y=cy+dy; if(inB(x,y)) safe.add(key(x,y));
+    });
+  }
+  for(let y=1;y<ROWS-1;y++) for(let x=1;x<COLS-1;x++){
+    if(grid[y][x]===FLOOR && !safe.has(key(x,y)) && Math.random()<BARREL_FILL)
+      grid[y][x]=BARREL;
+  }
+}
+
+function makePlayer(tx,ty,isHuman,botColor,botDiff){
+  return { tx,ty, fx:tx,fy:ty, tox:tx,toy:ty, t:0, moving:false, dir:null,
+    isHuman, color:isHuman?COLORS.player:botColor, alive:true,
+    range:1, maxBubbles:1, active:0, speed:0,
+    trapped:false, trappedBy:null, trapTimer:0,
+    botDiff, think:0, anim:0 };
+}
+
+// ====================== RESET / START ======================
+function reset(){
+  buildMap();
+  bubbles=[]; blasts=[]; powerups=[]; burstCounter=0;
+  players=[
+    makePlayer(1,1,true),
+    makePlayer(COLS-2,1,false,COLORS.bot[0],botPlan(0)),
+    makePlayer(1,ROWS-2,false,COLORS.bot[1],botPlan(1)),
+    makePlayer(COLS-2,ROWS-2,false,COLORS.bot[2],botPlan(2)),
+  ];
+}
+// difficulty per bot, blended with chosen level so "mixed" feels varied
+function botPlan(i){
+  const base = {easy:{move:0.27,trap:0.35,react:0.55},
+                normal:{move:0.21,trap:0.7,react:0.85},
+                hard:{move:0.16,trap:1,react:1}}[diff];
+  const spice=[{move:+0.05,trap:-0.15},{move:0,trap:0},{move:-0.03,trap:+0.1}][i];
+  return { move:Math.max(0.1,base.move+spice.move),
+           trap:Math.min(1,Math.max(0,base.trap+spice.trap)),
+           react:base.react };
+}
+
+function startGame(){
+  reset(); state='playing';
+  document.getElementById('startScreen').classList.add('hidden');
+  document.getElementById('overScreen').classList.add('hidden');
+}
+function endGame(win){
+  state='over';
+  const r=document.getElementById('resultText');
+  r.textContent = win ? 'YOU WIN 🏆' : 'POPPED 💀';
+  r.className = 'result '+(win?'win':'lose');
+  document.getElementById('overScreen').classList.remove('hidden');
+  win ? sfx.win() : sfx.lose();
+}
+
+// ====================== INPUT ======================
+const held=[]; let wantBubble=false;
+function pressDir(d){ if(!held.includes(d)) held.push(d); mashEscape(); }
+function releaseDir(d){ const i=held.indexOf(d); if(i>=0) held.splice(i,1); }
+function mashEscape(){ // tapping while trapped helps you wriggle free
+  const me=players[0];
+  if(me && me.trapped) me.trapTimer=Math.max(0, me.trapTimer-0.35);
+}
+const KEYMAP={ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',
+  w:'up',s:'down',a:'left',d:'right',W:'up',S:'down',A:'left',D:'right'};
+addEventListener('keydown',e=>{
+  if(e.key===' '){ wantBubble=true; e.preventDefault(); return; }
+  const d=KEYMAP[e.key]; if(d){ pressDir(d); e.preventDefault(); }
+});
+addEventListener('keyup',e=>{ const d=KEYMAP[e.key]; if(d) releaseDir(d); });
+
+function bindBtn(id,onDown,onUp){
+  const el=document.getElementById(id);
+  el.addEventListener('pointerdown',e=>{e.preventDefault(); onDown();});
+  el.addEventListener('pointerup',e=>{e.preventDefault(); onUp&&onUp();});
+  el.addEventListener('pointerleave',e=>{onUp&&onUp();});
+  el.addEventListener('pointercancel',e=>{onUp&&onUp();});
+}
+['up','down','left','right'].forEach(d=>bindBtn(d,()=>pressDir(d),()=>releaseDir(d)));
+bindBtn('bomb',()=>{ wantBubble=true; });
+
+document.getElementById('playBtn').onclick=startGame;
+document.getElementById('againBtn').onclick=startGame;
+document.querySelectorAll('.diff').forEach(el=>el.onclick=()=>{
+  diff=el.dataset.d;
+  document.querySelectorAll('.diff').forEach(x=>x.classList.remove('sel'));
+  el.classList.add('sel');
+});
+document.getElementById('mute').onclick=function(){ muted=!muted; this.textContent=muted?'🔇':'🔊'; };
+
+// ====================== BUBBLES / BLASTS ======================
+function placeBubble(p){
+  const {x,y}=tileOf(p);
+  if(p.active>=p.maxBubbles || bubbleAt(x,y)) return;
+  bubbles.push({x,y,fuse:FUSE,range:p.range,owner:p});
+  p.active++; sfx.place();
+}
+function burst(b){
+  const id=++burstCounter;
+  const cells=blastCells(b.x,b.y,b.range);
+  for(const c of cells){
+    if(grid[c.y][c.x]===BARREL){
+      grid[c.y][c.x]=FLOOR;
+      if(Math.random()<POWERUP_CHANCE)
+        powerups.push({x:c.x,y:c.y,type:Math.floor(Math.random()*3)});
+    }
+    blasts.push({x:c.x,y:c.y,timer:BLAST_TIME,id});
+    const chain=bubbleAt(c.x,c.y);
+    if(chain && chain!==b && chain.fuse>0) chain.fuse=0; // chain reaction
+  }
+  sfx.burst();
+}
+
+// ====================== AI ======================
+// BFS: first-step direction from (sx,sy) to nearest tile where isGoal, walking canEnter tiles
+function bfsStep(sx,sy,isGoal,canEnter){
+  if(isGoal(sx,sy)) return null;
+  const q=[[sx,sy]], seen=new Set([key(sx,sy)]), from=new Map();
+  const dirs=[['up',0,-1],['down',0,1],['left',-1,0],['right',1,0]];
+  while(q.length){
+    const [cx,cy]=q.shift();
+    for(const [name,dx,dy] of dirs){
+      const nx=cx+dx, ny=cy+dy, k=key(nx,ny);
+      if(seen.has(k)||!inB(nx,ny)) continue;
+      if(!canEnter(nx,ny)) continue;
+      seen.add(k); from.set(k,{px:cx,py:cy,dir:name});
+      if(isGoal(nx,ny)){
+        let cur={px:nx,py:ny,dir:name}, step=cur;
+        while(!(cur.px===sx&&cur.py===sy)){ step=cur; cur=from.get(key(cur.px,cur.py)); if(!cur) break; }
+        return step.dir;
+      }
+      q.push([nx,ny]);
+    }
+  }
+  return null;
+}
+function lineClear(x1,y1,x2,y2){
+  if(x1===x2){ const a=Math.min(y1,y2),b=Math.max(y1,y2);
+    for(let y=a+1;y<b;y++) if(grid[y][x1]!==FLOOR) return false; return true; }
+  if(y1===y2){ const a=Math.min(x1,x2),b=Math.max(x1,x2);
+    for(let x=a+1;x<b;x++) if(grid[y1][x]!==FLOOR) return false; return true; }
+  return false;
+}
+function dirToTile(dx,dy){ return dx>0?'right':dx<0?'left':dy>0?'down':'up'; }
+
+function botAct(p, danger){
+  const {x,y}=tileOf(p);
+  const safe=(nx,ny)=> passable(nx,ny) && !danger.has(key(nx,ny));
+
+  // 1) In danger? flee to nearest safe tile.
+  if(danger.has(key(x,y))){
+    const dir=bfsStep(x,y, (gx,gy)=>!danger.has(key(gx,gy)),
+                          (nx,ny)=>passable(nx,ny));
+    return {dir, bubble:false};
+  }
+
+  // escape check for placing a bubble here
+  const future=new Set(blastCells(x,y,p.range).map(c=>key(c.x,c.y)));
+  const hasEscape=[[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>{
+    const nx=x+dx,ny=y+dy; return safe(nx,ny) && !future.has(key(nx,ny));
+  });
+
+  // 2) Try to trap the human if lined up & in range.
+  const me=players[0];
+  if(me.alive && p.active<p.maxBubbles && hasEscape && Math.random()<p.botDiff.trap){
+    const mt=tileOf(me);
+    const aligned=(mt.x===x||mt.y===y);
+    const dist=Math.abs(mt.x-x)+Math.abs(mt.y-y);
+    if(aligned && dist<=p.range && dist>0 && lineClear(x,y,mt.x,mt.y))
+      return {dir:null, bubble:true};
+  }
+
+  // 3) Adjacent to a barrel? blast it (farm power-ups).
+  if(p.active<p.maxBubbles && hasEscape){
+    const adjBarrel=[[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>{
+      const nx=x+dx,ny=y+dy; return inB(nx,ny)&&grid[ny][nx]===BARREL; });
+    if(adjBarrel && Math.random()<0.6) return {dir:null, bubble:true};
+  }
+
+  // 4) Move toward goal: a power-up, else a barrel-adjacent tile, else the player, else wander.
+  const canEnter=(nx,ny)=>safe(nx,ny);
+  let dir = bfsStep(x,y,(gx,gy)=>powerups.some(pu=>pu.x===gx&&pu.y===gy), canEnter);
+  if(!dir){
+    dir = bfsStep(x,y,(gx,gy)=>[[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>{
+      const bx=gx+dx,by=gy+dy; return inB(bx,by)&&grid[by][bx]===BARREL; }), canEnter);
+  }
+  if(!dir && me.alive && Math.random()<p.botDiff.react){
+    const mt=tileOf(me);
+    dir = bfsStep(x,y,(gx,gy)=>gx===mt.x&&gy===mt.y, canEnter);
+  }
+  if(!dir){ // wander
+    const opts=[[1,0,'right'],[-1,0,'left'],[0,1,'down'],[0,-1,'up']].filter(([dx,dy])=>safe(x+dx,y+dy));
+    if(opts.length) dir=opts[Math.floor(Math.random()*opts.length)][2];
+  }
+  return {dir, bubble:false};
+}
+
+// ====================== UPDATE ======================
+function moveDur(p){ return Math.max(0.08, BASE_MOVE - 0.022*p.speed); }
+function botMoveDur(p){ return Math.max(0.09, p.botDiff.move - 0.02*p.speed); }
+const DIRV={up:[0,-1],down:[0,1],left:[-1,0],right:[1,0]};
+
+function update(dt){
+  // bubbles fuse + chain bursts
+  for(const b of bubbles) b.fuse-=dt;
+  let popped=true;
+  while(popped){
+    popped=false;
+    for(let i=bubbles.length-1;i>=0;i--){
+      if(bubbles[i].fuse<=0){
+        const b=bubbles.splice(i,1)[0];
+        if(b.owner.active>0) b.owner.active--;
+        burst(b); popped=true;
+      }
+    }
+  }
+  // blasts decay
+  for(let i=blasts.length-1;i>=0;i--){ blasts[i].timer-=dt; if(blasts[i].timer<=0) blasts.splice(i,1); }
+
+  // shared danger map for bots
+  const danger=new Set();
+  for(const bl of blasts) danger.add(key(bl.x,bl.y));
+  for(const b of bubbles) for(const c of blastCells(b.x,b.y,b.range)) danger.add(key(c.x,c.y));
+
+  // entities
+  for(const p of players){
+    if(!p.alive) continue;
+    p.anim+=dt;
+
+    if(p.trapped){
+      p.trapTimer-=dt;
+      if(p.trapTimer<=0){ p.trapped=false; p.trappedBy=null; }
+      continue; // can't move while trapped
+    }
+
+    // pick direction / action when settled on a tile
+    if(!p.moving){
+      let dir=null, bubble=false;
+      if(p.isHuman){
+        dir = held.length ? held[held.length-1] : null;
+        if(wantBubble){ bubble=true; }
+      } else {
+        p.think-=dt;
+        if(p.think<=0){ p.think=0.05; const a=botAct(p,danger); dir=a.dir; bubble=a.bubble; p._dir=dir; }
+        else dir=p._dir;
+      }
+      if(bubble) placeBubble(p);
+      if(dir){
+        const [dx,dy]=DIRV[dir]; const nx=p.tx+dx, ny=p.ty+dy;
+        if(passable(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir; }
+      }
+    }
+    // advance movement
+    if(p.moving){
+      p.t += dt/(p.isHuman?moveDur(p):botMoveDur(p));
+      if(p.t>=1){
+        p.t=0; p.moving=false; p.tx=p.tox; p.ty=p.toy;
+        // pickup
+        for(let i=powerups.length-1;i>=0;i--){
+          if(powerups[i].x===p.tx && powerups[i].y===p.ty){
+            const t=powerups.splice(i,1)[0].type;
+            if(t===PU_RANGE) p.range=Math.min(8,p.range+1);
+            else if(t===PU_BUBBLE) p.maxBubbles=Math.min(8,p.maxBubbles+1);
+            else p.speed=Math.min(5,p.speed+1);
+            if(p.isHuman) sfx.power();
+          }
+        }
+      }
+    }
+  }
+  wantBubble=false;
+
+  // blast vs entities: trap fresh victims, pop already-trapped ones
+  for(const p of players){
+    if(!p.alive) continue;
+    const {x,y}=tileOf(p);
+    const hits=blasts.filter(bl=>bl.x===x&&bl.y===y);
+    if(!hits.length) continue;
+    if(p.trapped){
+      if(hits.some(h=>h.id!==p.trappedBy)){
+        p.alive=false; if(p.isHuman) sfx.pop(); else sfx.pop();
+      }
+    } else {
+      p.trapped=true; p.trappedBy=hits[0].id; p.trapTimer=TRAP_TIME;
+      p.moving=false; p.tx=x; p.ty=y;
+      sfx.trap();
+    }
+  }
+
+  // win/lose
+  const alive=players.filter(p=>p.alive);
+  const human=players[0];
+  if(!human.alive) endGame(false);
+  else if(alive.length<=1) endGame(true);
+}
+
+// ====================== RENDER ======================
+function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+function render(){
+  // floor (wood planks)
+  for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
+    const px=x*TILE, py=y*TILE, v=grid[y][x];
+    ctx.fillStyle = (x+y)%2 ? '#caa472' : '#bd9866'; // planks
+    ctx.fillRect(px,py,TILE,TILE);
+    ctx.fillStyle='rgba(120,80,40,.18)'; ctx.fillRect(px,py,TILE,2);
+  }
+  // walls + barrels
+  for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
+    const px=x*TILE, py=y*TILE, v=grid[y][x];
+    if(v===WALL){
+      ctx.fillStyle='#41566e'; roundRect(px+1,py+1,TILE-2,TILE-2,5); ctx.fill();
+      ctx.fillStyle='#5a738f';
+      roundRect(px+4,py+4,TILE-8,TILE-12,4); ctx.fill();
+      ctx.fillStyle='rgba(255,255,255,.12)'; roundRect(px+6,py+6,TILE-12,6,3); ctx.fill();
+    } else if(v===BARREL){
+      ctx.fillStyle='#8a5a2c'; roundRect(px+4,py+3,TILE-8,TILE-6,6); ctx.fill();
+      ctx.strokeStyle='#5e3c1a'; ctx.lineWidth=3;
+      ctx.beginPath(); ctx.moveTo(px+5,py+TILE*0.4); ctx.lineTo(px+TILE-5,py+TILE*0.4); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(px+5,py+TILE*0.66); ctx.lineTo(px+TILE-5,py+TILE*0.66); ctx.stroke();
+      ctx.fillStyle='rgba(255,220,160,.25)'; roundRect(px+7,py+6,8,TILE-12,3); ctx.fill();
+    }
+  }
+  // power-ups
+  for(const pu of powerups){
+    const px=pu.x*TILE+TILE/2, py=pu.y*TILE+TILE/2;
+    const bob=Math.sin(performance.now()/250+pu.x)*2;
+    ctx.fillStyle='rgba(0,0,0,.18)'; ctx.beginPath(); ctx.ellipse(px,py+13,11,4,0,0,7); ctx.fill();
+    ctx.font='22px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(['💧','🫧','👟'][pu.type], px, py+bob);
+  }
+  // bubbles
+  for(const b of bubbles){
+    const px=b.x*TILE+TILE/2, py=b.y*TILE+TILE/2;
+    const pulse=1+Math.sin(performance.now()/90)*0.06*(1-b.fuse/FUSE);
+    const r=TILE*0.42*pulse;
+    ctx.fillStyle='rgba(95,200,255,.45)'; ctx.beginPath(); ctx.arc(px,py,r,0,7); ctx.fill();
+    ctx.strokeStyle='rgba(150,230,255,.9)'; ctx.lineWidth=2; ctx.stroke();
+    ctx.fillStyle='rgba(255,255,255,.7)'; ctx.beginPath(); ctx.arc(px-r*0.3,py-r*0.3,r*0.22,0,7); ctx.fill();
+  }
+  // blasts (water)
+  for(const bl of blasts){
+    const px=bl.x*TILE, py=bl.y*TILE, a=Math.min(1,bl.timer/BLAST_TIME);
+    ctx.fillStyle=`rgba(120,210,255,${0.55*a})`; roundRect(px+2,py+2,TILE-4,TILE-4,6); ctx.fill();
+    ctx.fillStyle=`rgba(255,255,255,${0.5*a})`; roundRect(px+7,py+7,TILE-14,TILE-14,5); ctx.fill();
+  }
+  // players
+  for(const p of players){
+    if(!p.alive) continue;
+    let cx,cy;
+    if(p.moving){ cx=(p.fx+(p.tox-p.fx)*p.t)*TILE+TILE/2; cy=(p.fy+(p.toy-p.fy)*p.t)*TILE+TILE/2; }
+    else { cx=p.tx*TILE+TILE/2; cy=p.ty*TILE+TILE/2; }
+    const wob=p.moving?Math.sin(p.anim*20)*1.5:0;
+    // shadow
+    ctx.fillStyle='rgba(0,0,0,.22)'; ctx.beginPath(); ctx.ellipse(cx,cy+14,12,4,0,0,7); ctx.fill();
+    // body
+    ctx.fillStyle=p.color; ctx.beginPath(); ctx.arc(cx,cy+wob,TILE*0.34,0,7); ctx.fill();
+    ctx.strokeStyle='rgba(0,0,0,.25)'; ctx.lineWidth=2; ctx.stroke();
+    // eyes
+    ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(cx-5,cy-3+wob,4,0,7); ctx.arc(cx+5,cy-3+wob,4,0,7); ctx.fill();
+    ctx.fillStyle='#222';
+    const ex=p.dir==='left'?-1.5:p.dir==='right'?1.5:0;
+    ctx.beginPath(); ctx.arc(cx-5+ex,cy-3+wob,2,0,7); ctx.arc(cx+5+ex,cy-3+wob,2,0,7); ctx.fill();
+    // bandana for the human (pirate captain)
+    if(p.isHuman){
+      ctx.fillStyle='#d6402f'; roundRect(cx-12,cy-15+wob,24,7,3); ctx.fill();
+    }
+    // trapped bubble overlay
+    if(p.trapped){
+      const fl=p.trapTimer<0.8 && Math.floor(performance.now()/100)%2===0;
+      ctx.strokeStyle=fl?'rgba(255,120,120,.95)':'rgba(150,230,255,.95)';
+      ctx.lineWidth=3; ctx.beginPath(); ctx.arc(cx,cy,TILE*0.46,0,7); ctx.stroke();
+      ctx.fillStyle='rgba(150,220,255,.22)'; ctx.beginPath(); ctx.arc(cx,cy,TILE*0.46,0,7); ctx.fill();
+    }
+  }
+  // HUD: human power-ups
+  const me=players[0];
+  if(me){
+    ctx.fillStyle='rgba(8,16,30,.55)'; roundRect(6,6,150,26,8); ctx.fill();
+    ctx.font='15px sans-serif'; ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.fillStyle='#fff';
+    ctx.fillText(`💧${me.range}  🫧${me.maxBubbles}  👟${me.speed+1}`, 14, 20);
+    const n=players.filter(p=>p.alive).length;
+    ctx.textAlign='right'; ctx.fillText(`Sailors: ${n}`, COLS*TILE-14, 20);
+  }
+}
+
+// ====================== LOOP ======================
+function loop(ts){
+  const dt=Math.min(0.05,(ts-last)/1000)||0; last=ts;
+  if(state==='playing') update(dt);
+  if(state!=='start') render();
+  requestAnimationFrame(loop);
+}
+
+// initial paint: build a map for the menu backdrop
+buildMap(); players=[]; bubbles=[]; blasts=[]; powerups=[];
+requestAnimationFrame(loop);
+
+// register service worker for offline play (ignored when opened as a local file)
+if('serviceWorker' in navigator && location.protocol.startsWith('http')){
+  addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
+}
+</script>
+</body>
+</html>
