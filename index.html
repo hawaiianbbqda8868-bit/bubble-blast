@@ -263,12 +263,18 @@ bindBtn('bomb',()=>{ wantBubble=true; });
   const setKnob=(dx,dy)=> knob.style.transform=`translate(${dx}px,${dy}px)`;
   function handle(cx,cy){
     const r=base.getBoundingClientRect();
-    let dx=cx-(r.left+r.width/2), dy=cy-(r.top+r.height/2);
-    const mag=Math.hypot(dx,dy)||1;
-    if(mag>R){ dx=dx/mag*R; dy=dy/mag*R; }
-    setKnob(dx,dy);
+    const dx=cx-(r.left+r.width/2), dy=cy-(r.top+r.height/2);
+    const mag=Math.hypot(dx,dy);
+    // 4-way only: pick the dominant axis
     let d=null;
     if(mag>DEAD) d = Math.abs(dx)>Math.abs(dy) ? (dx>0?'right':'left') : (dy>0?'down':'up');
+    // snap the knob onto that single axis (no diagonals / free 360° movement)
+    const dist=Math.min(R,mag);
+    if(d==='right') setKnob(dist,0);
+    else if(d==='left') setKnob(-dist,0);
+    else if(d==='down') setKnob(0,dist);
+    else if(d==='up') setKnob(0,-dist);
+    else setKnob(0,0);
     if(d!==cur){ cur=d; held.length=0; if(d){ held.push(d); mashEscape(); } }
   }
   base.addEventListener('pointerdown',e=>{ active=true; base.setPointerCapture(e.pointerId); handle(e.clientX,e.clientY); e.preventDefault(); });
