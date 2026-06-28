@@ -819,60 +819,26 @@ function render(){
   }
 }
 
-// ====================== NETWORK (online via WebRTC / PeerJS) ======================
-// STUN + free TURN so peers connect even across different networks/NATs
-const ICE = { iceServers: [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'turn:openrelay.metered.ca:80', username:'openrelayproject', credential:'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443', username:'openrelayproject', credential:'openrelayproject' }
-]};
-function loadPeerJS(){
+// ====================== NETWORK (online via a public MQTT relay over WebSocket) ======================
+// WebSocket to a public broker always connects through NATs — no fragile P2P handshake.
+const MQTT_URL='wss://broker.emqx.io:8084/mqtt';
+let mqc=null, myCid=null, slotByCid={}, helloTimer=null, roomBase=null, lastInDir='_', lastInT=0;
+function loadMqtt(){
   return new Promise((res,rej)=>{
-    if(window.Peer) return res();
+    if(window.mqtt) return res();
     const s=document.createElement('script');
-    s.src='https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
+    s.src='https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js';
     s.onload=()=>res(); s.onerror=()=>rej(new Error('Could not load multiplayer (check your internet).'));
     document.head.appendChild(s);
   });
 }
 function makeCode(){ const c='ABCDEFGHJKMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<4;i++) s+=c[Math.floor(Math.random()*c.length)]; return s; }
-function leaveNet(){ try{ if(peer) peer.destroy(); }catch(e){} peer=null; conns=[]; hostConn=null; netRole='off'; mySlot=0; }
-
-// ---- HOST ----
-async function hostGame(){
-  const st=document.getElementById('hostStatus'); st.textContent='Connecting…';
-  document.getElementById('roomCode').textContent='…';
-  try{ await loadPeerJS(); }catch(e){ st.textContent=e.message; return; }
-  const code=makeCode();
-  netRole='host'; mySlot=0; conns=[];
-  peer=new Peer('bnb-'+code,{debug:0, config:ICE});
-  peer.on('open',()=>{ document.getElementById('roomCode').textContent=code; st.textContent='Share the code, then tap START.'; updateHostLobby(); });
-  peer.on('error',e=>{ st.textContent = e.type==='unavailable-id' ? 'Code clash — go back and retry.' : ('Network error: '+e.type); });
-  peer.on('connection',c=>{
-    if(conns.length>=3 || state==='playing'){ c.on('open',()=>c.close()); return; }
-    c.on('open',()=>{ conns.push(c); updateHostLobby(); });
-    c.on('data',d=>onHostData(c,d));
-    c.on('close',()=>{ conns=conns.filter(x=>x!==c); updateHostLobby(); });
-  });
-}
-function updateHostLobby(){ const el=document.getElementById('hostLobby'); if(el) el.textContent='Sailors: '+(1+conns.length)+' / 4   (empty seats = bots)'; }
-function onHostData(c,d){
-  if(d.t==='in' && c._slot!=null && players){
-    const p=players[c._slot]; if(!p) return;
-    if(p.trapped && d.dir && p._lastHeld!==d.dir) p.struggle+=0.18; // remote wiggle
-    p.inHeld = d.dir?[d.dir]:[]; if(d.bomb) p.inBomb=true; p._lastHeld=d.dir||null;
-  }
-}
-function hostStart(){
-  const controls=['local']; conns.forEach((c,i)=>{ c._slot=i+1; controls.push('remote'); });
-  while(controls.length<4) controls.push('ai');
-  reset(controls); state='playing'; winnerSlot=-1; deadShown=false; hideOverlays();
-  const m=mapMsg();
-  conns.forEach(c=>{ try{ c.send({t:'start', slot:c._slot, map:m}); }catch(e){} });
-}
+function rid(){ return Math.random().toString(36).slice(2,9); }
+function leaveNet(){ try{ if(mqc) mqc.end(true); }catch(e){} mqc=null; netRole='off'; mySlot=0; slotByCid={}; if(helloTimer) clearInterval(helloTimer); }
 function mapMsg(){ return { grid:grid.map(r=>r.join('')), cannons:[...cannonSet], ships:[...shipSet], shipCenter }; }
+function applyMap(m){ grid=m.grid.map(s=>s.split('').map(Number)); cannonSet=new Set(m.cannons); shipSet=new Set(m.ships); shipCenter=m.shipCenter; }
 function snapshot(){
-  return { t:'s', gs:state, win:winnerSlot,
+  return { gs:state, win:winnerSlot,
     grid: grid.map(r=>r.join('')),
     players: players.map(p=>({slot:p.slot,captain:p.captain,tx:p.tx,ty:p.ty,fx:p.fx,fy:p.fy,tox:p.tox,toy:p.toy,
       t:p.t,moving:p.moving,dir:p.dir,alive:p.alive,trapped:p.trapped,trapTimer:p.trapTimer,struggle:p.struggle,
@@ -881,7 +847,48 @@ function snapshot(){
     blasts: blasts.map(b=>({x:b.x,y:b.y,timer:b.timer})),
     powerups: powerups.map(p=>({x:p.x,y:p.y,type:p.type})) };
 }
-function hostBroadcast(){ if(!conns.length) return; const s=snapshot(); conns.forEach(c=>{ try{ c.send(s); }catch(e){} }); }
+
+// ---- HOST ----
+async function hostGame(){
+  const st=document.getElementById('hostStatus'); st.textContent='Connecting…'; document.getElementById('roomCode').textContent='…';
+  try{ await loadMqtt(); }catch(e){ st.textContent=e.message; return; }
+  const code=makeCode(); netRole='host'; mySlot=0; slotByCid={};
+  roomBase='bbnb2026/'+code;
+  mqc=mqtt.connect(MQTT_URL,{clientId:'h_'+rid(),clean:true,keepalive:30,connectTimeout:9000,reconnectPeriod:3000});
+  mqc.on('connect',()=>{ document.getElementById('roomCode').textContent=code; st.textContent='Share the code, then tap START.';
+    mqc.subscribe(roomBase+'/hello'); mqc.subscribe(roomBase+'/input'); updateHostLobby(); });
+  mqc.on('error',()=>{ st.textContent='Network error — go back and retry.'; });
+  mqc.on('message',(t,payload)=>{
+    let d; try{ d=JSON.parse(payload.toString()); }catch(e){ return; }
+    if(t===roomBase+'/hello'){
+      if(state==='playing') return;
+      if(!(d.cid in slotByCid)){
+        const used=Object.values(slotByCid); let slot=-1;
+        for(let s=1;s<=3;s++){ if(!used.includes(s)){ slot=s; break; } }
+        if(slot<0) return; slotByCid[d.cid]=slot;
+      }
+      mqc.publish(roomBase+'/welcome', JSON.stringify({cid:d.cid, slot:slotByCid[d.cid]}));
+      updateHostLobby();
+    } else if(t===roomBase+'/input'){
+      const p=players&&players[d.slot];
+      if(p && p.control==='remote'){
+        if(p.trapped && d.dir && p._lastHeld!==d.dir) p.struggle+=0.18; // remote wiggle
+        p.inHeld = d.dir?[d.dir]:[]; if(d.bomb) p.inBomb=true; p._lastHeld=d.dir||null;
+      }
+    }
+  });
+}
+function updateHostLobby(){ const el=document.getElementById('hostLobby'); if(el) el.textContent='Sailors: '+(1+Object.keys(slotByCid).length)+' / 4   (empty seats = bots)'; }
+function hostStart(){
+  const controls=['local','ai','ai','ai'];
+  Object.values(slotByCid).forEach(s=>{ if(s>=1&&s<=3) controls[s]='remote'; });
+  reset(controls); state='playing'; winnerSlot=-1; deadShown=false; hideOverlays();
+  if(mqc) mqc.publish(roomBase+'/start', JSON.stringify({map:mapMsg()}));
+}
+function hostBroadcast(){
+  if(netRole!=='host' || !mqc || !Object.keys(slotByCid).length) return;
+  mqc.publish(roomBase+'/state', JSON.stringify(snapshot()));
+}
 
 // ---- CLIENT ----
 async function joinGame(){
@@ -889,34 +896,43 @@ async function joinGame(){
   const code=(document.getElementById('joinCode').value||'').trim().toUpperCase();
   if(code.length<3){ st.textContent='Type the room code first.'; return; }
   st.textContent='Connecting…';
-  try{ await loadPeerJS(); }catch(e){ st.textContent=e.message; return; }
-  netRole='client';
-  peer=new Peer({debug:0, config:ICE});
-  peer.on('open',()=>{
-    hostConn=peer.connect('bnb-'+code,{reliable:true});
-    hostConn.on('open',()=>{ st.textContent='Connected! Waiting for host to start…'; });
-    hostConn.on('data',d=>onClientData(d));
-    hostConn.on('close',()=>{ st.textContent='Host disconnected.'; });
+  try{ await loadMqtt(); }catch(e){ st.textContent=e.message; return; }
+  netRole='client'; myCid='c_'+rid(); mySlot=0; roomBase='bbnb2026/'+code;
+  mqc=mqtt.connect(MQTT_URL,{clientId:myCid,clean:true,keepalive:30,connectTimeout:9000,reconnectPeriod:3000});
+  mqc.on('connect',()=>{
+    mqc.subscribe(roomBase+'/welcome'); mqc.subscribe(roomBase+'/start'); mqc.subscribe(roomBase+'/state');
+    st.textContent='Looking for room…';
+    const hello=()=>{ try{ mqc.publish(roomBase+'/hello', JSON.stringify({cid:myCid})); }catch(e){} };
+    hello(); if(helloTimer) clearInterval(helloTimer);
+    helloTimer=setInterval(()=>{ if(mySlot>0){ clearInterval(helloTimer); } else hello(); }, 1200);
   });
-  peer.on('error',e=>{ st.textContent = e.type==='peer-unavailable' ? 'Room not found — check the code.' : ('Network error: '+e.type); });
+  mqc.on('error',()=>{ st.textContent='Network error — go back and retry.'; });
+  mqc.on('message',(t,payload)=>{
+    let d; try{ d=JSON.parse(payload.toString()); }catch(e){ return; }
+    if(t===roomBase+'/welcome'){ if(d.cid===myCid && mySlot<=0){ mySlot=d.slot; if(helloTimer) clearInterval(helloTimer);
+        st.textContent='Joined as Sailor '+(mySlot+1)+'! Waiting for host to start…'; } }
+    else if(t===roomBase+'/start'){ if(mySlot>0){ applyMap(d.map); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); } }
+    else if(t===roomBase+'/state'){ applySnapshot(d); }
+  });
 }
-function onClientData(d){
-  if(d.t==='start'){ mySlot=d.slot; applyMap(d.map); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
-  else if(d.t==='s'){
-    grid=d.grid.map(s=>s.split('').map(Number));
-    players=d.players; bubbles=d.bubbles; blasts=d.blasts; powerups=d.powerups;
-    state=d.gs; winnerSlot=d.win;
-    const me=players[mySlot];
-    if(d.gs==='over'){ if(!deadShown){ deadShown=true; showResult(winnerSlot===mySlot); } }
-    else if(me && !me.alive && !deadShown){ deadShown=true; showResult(false); }
-  }
+function applySnapshot(d){
+  grid=d.grid.map(s=>s.split('').map(Number));
+  players=d.players; bubbles=d.bubbles; blasts=d.blasts; powerups=d.powerups;
+  state=d.gs; winnerSlot=d.win;
+  if(state==='playing') hideOverlays();
+  const me=players[mySlot];
+  if(d.gs==='over'){ if(!deadShown){ deadShown=true; showResult(winnerSlot===mySlot); } }
+  else if(me && !me.alive && !deadShown){ deadShown=true; showResult(false); }
 }
-function applyMap(m){ grid=m.grid.map(s=>s.split('').map(Number)); cannonSet=new Set(m.cannons); shipSet=new Set(m.ships); shipCenter=m.shipCenter; }
 function netSendInput(){
-  if(!hostConn||!hostConn.open) return;
+  if(netRole!=='client' || !mqc || mySlot<=0) return;
   const dir = held.length?held[held.length-1]:null;
   const bomb = wantBubble; wantBubble=false;
-  try{ hostConn.send({t:'in', dir, bomb}); }catch(e){}
+  const now = performance.now();
+  if(bomb || dir!==lastInDir || now-lastInT>120){    // ~throttle to changes + 8Hz heartbeat
+    lastInDir=dir; lastInT=now;
+    try{ mqc.publish(roomBase+'/input', JSON.stringify({slot:mySlot, dir, bomb})); }catch(e){}
+  }
 }
 
 // ====================== LOOP ======================
@@ -930,7 +946,7 @@ function loop(ts){
       wantBubble=false;
       update(dt);
     }
-    if(netRole==='host' && state!=='start'){ netTick=(netTick+1)%2; if(!netTick) hostBroadcast(); }
+    if(netRole==='host' && state!=='start'){ netTick=(netTick+1)%4; if(!netTick) hostBroadcast(); }
   }
   if(state!=='start') render();
   requestAnimationFrame(loop);
