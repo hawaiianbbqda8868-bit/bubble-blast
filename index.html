@@ -54,6 +54,21 @@
   .diff.sel { border-color:#ffe27a; background:rgba(255,226,122,.16); color:#fff; }
   #mute { position:fixed; top:16px; right:16px; z-index:40; width:46px; height:46px; border:none;
     border-radius:50%; background:rgba(255,255,255,.12); color:#fff; font-size:22px; }
+
+  /* online / mode UI */
+  .modebtns { display:flex; flex-direction:column; gap:13px; margin-top:26px; width:290px; max-width:82vw; }
+  .modebtn { padding:16px; font-size:20px; font-weight:700; border:none; border-radius:16px; cursor:pointer;
+    background:linear-gradient(180deg,#ffe27a,#ffb84d); color:#06243a; box-shadow:0 5px 16px rgba(0,0,0,.4); }
+  .modebtn.alt { background:rgba(255,255,255,.12); color:#cfe6ff; }
+  .panel { display:none; flex-direction:column; align-items:center; gap:14px; margin-top:18px; width:300px; max-width:88vw; }
+  .panel.show { display:flex; }
+  .code { font-size:38px; font-weight:800; letter-spacing:6px; color:#ffe27a; background:rgba(0,0,0,.35);
+    padding:10px 22px; border-radius:12px; -webkit-user-select:all; user-select:all; }
+  .netinput { width:100%; padding:14px; font-size:24px; text-align:center; letter-spacing:4px; text-transform:uppercase;
+    border-radius:12px; border:2px solid rgba(255,255,255,.25); background:rgba(255,255,255,.08); color:#fff; }
+  .status { font-size:15px; color:#bcd6f0; min-height:20px; max-width:280px; }
+  .lobby { font-size:17px; color:#ffe27a; font-weight:700; }
+  .smallbtn { padding:8px 16px; font-size:14px; border:none; border-radius:20px; background:rgba(255,255,255,.14); color:#cfe6ff; cursor:pointer; }
 </style>
 </head>
 <body>
@@ -67,13 +82,45 @@
 <div class="overlay" id="startScreen">
   <div class="title">泡泡堂</div>
   <div class="subtitle">Bubble Blast · 海盗 Pirate Cove</div>
-  <div class="diffrow">
-    <div class="diff" data-d="easy">Easy</div>
-    <div class="diff sel" data-d="normal">Normal</div>
-    <div class="diff" data-d="hard">Hard</div>
+
+  <div class="modebtns" id="modeView">
+    <button class="modebtn" id="modeSingle">🏴‍☠️ Single Player</button>
+    <button class="modebtn alt" id="modeHost">🌐 Host Online Game</button>
+    <button class="modebtn alt" id="modeJoin">🔑 Join Game</button>
   </div>
-  <button class="play" id="playBtn">PLAY ▶</button>
-  <div class="hint">Catch a rival in your <b>water bubble</b> 🫧 — when the bubble <b>pops, they're out!</b> If <b>you</b> get bubbled, <b>wiggle the joystick fast</b> to break free before it pops. Grab <b>💧 range</b>, <b>🫧 extra bubbles</b>, <b>👟 speed</b>. Last sailor standing wins!<br>Move: joystick / arrow keys · Bubble: 🫧 / spacebar</div>
+
+  <div class="panel" id="singlePanel">
+    <div class="diffrow">
+      <div class="diff" data-d="easy">Easy</div>
+      <div class="diff sel" data-d="normal">Normal</div>
+      <div class="diff" data-d="hard">Hard</div>
+    </div>
+    <button class="play" id="playBtn">PLAY ▶</button>
+    <button class="smallbtn" data-back>← back</button>
+  </div>
+
+  <div class="panel" id="hostPanel">
+    <div class="status">Your room code — share it with friends:</div>
+    <div class="code" id="roomCode">…</div>
+    <div class="lobby" id="hostLobby">Sailors: 1 / 4</div>
+    <div class="diffrow">
+      <div class="diff" data-d="easy">Easy</div>
+      <div class="diff sel" data-d="normal">Normal</div>
+      <div class="diff" data-d="hard">Hard</div>
+    </div>
+    <button class="play" id="hostStart">START ▶</button>
+    <div class="status" id="hostStatus"></div>
+    <button class="smallbtn" data-back>← back</button>
+  </div>
+
+  <div class="panel" id="joinPanel">
+    <input class="netinput" id="joinCode" placeholder="CODE" maxlength="8" autocapitalize="characters" autocomplete="off">
+    <button class="play" id="joinConnect">JOIN ▶</button>
+    <div class="status" id="joinStatus"></div>
+    <button class="smallbtn" data-back>← back</button>
+  </div>
+
+  <div class="hint">Catch a rival in your <b>water bubble</b> 🫧 — when it <b>pops, they're out!</b> Wiggle to break free. Grab <b>💧🫧👟</b>. Last sailor standing wins!</div>
 </div>
 
 <div class="overlay hidden" id="overScreen">
@@ -107,6 +154,8 @@ let grid, players, bubbles, blasts, powerups, state='start', diff='normal';
 let cannonSet, shipSet, shipCenter;
 let burstCounter = 0, muted=false;
 let last = 0;
+// networking
+let netRole='off', mySlot=0, peer=null, conns=[], hostConn=null, winnerSlot=-1, deadShown=false, netTick=0;
 
 // ====================== AUDIO (tiny WebAudio) ======================
 let actx=null;
@@ -196,15 +245,19 @@ function makePlayer(tx,ty,isHuman,capColor,botDiff){
 }
 
 // ====================== RESET / START ======================
-function reset(){
+function reset(controls){
+  controls = controls || ['local','ai','ai','ai'];
   buildMap();
   bubbles=[]; blasts=[]; powerups=[]; burstCounter=0;
-  players=[
-    makePlayer(1,1,true,'#1a1a1f'),
-    makePlayer(COLS-2,1,false,CAPS[0],botPlan(0)),
-    makePlayer(1,ROWS-2,false,CAPS[1],botPlan(1)),
-    makePlayer(COLS-2,ROWS-2,false,CAPS[2],botPlan(2)),
-  ];
+  const spawns=[[1,1],[COLS-2,1],[1,ROWS-2],[COLS-2,ROWS-2]];
+  const caps=['#1a1a1f',CAPS[0],CAPS[1],CAPS[2]];
+  let bi=0;
+  players=spawns.map((s,i)=>{
+    const ctrl=controls[i]||'ai';
+    const p=makePlayer(s[0],s[1], ctrl!=='ai', caps[i], ctrl==='ai'?botPlan(bi++%3):null);
+    p.control=ctrl; p.slot=i; p.captain=(i===0); p.inHeld=[]; p.inBomb=false; p._lastHeld=null;
+    return p;
+  });
 }
 // difficulty per bot, blended with chosen level so "mixed" feels varied
 function botPlan(i){
@@ -217,19 +270,19 @@ function botPlan(i){
            react:base.react, esc:base.esc };
 }
 
-function startGame(){
-  reset(); state='playing';
+function hideOverlays(){
   document.getElementById('startScreen').classList.add('hidden');
   document.getElementById('overScreen').classList.add('hidden');
 }
-function endGame(win){
-  state='over';
+function showResult(win){
   const r=document.getElementById('resultText');
   r.textContent = win ? 'YOU WIN 🏆' : 'POPPED 💀';
   r.className = 'result '+(win?'win':'lose');
   document.getElementById('overScreen').classList.remove('hidden');
   win ? sfx.win() : sfx.lose();
 }
+function startGame(){ netRole='off'; mySlot=0; reset(); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
+function endGame(win){ state='over'; showResult(win); }
 
 // ====================== INPUT ======================
 const held=[]; let wantBubble=false;
@@ -285,13 +338,28 @@ bindBtn('bomb',()=>{ wantBubble=true; });
 })();
 
 document.getElementById('playBtn').onclick=startGame;
-document.getElementById('againBtn').onclick=startGame;
+document.getElementById('againBtn').onclick=function(){
+  if(netRole==='host') hostStart();
+  else if(netRole==='client'){ document.getElementById('overScreen').classList.add('hidden'); }
+  else startGame();
+};
 document.querySelectorAll('.diff').forEach(el=>el.onclick=()=>{
   diff=el.dataset.d;
-  document.querySelectorAll('.diff').forEach(x=>x.classList.remove('sel'));
-  el.classList.add('sel');
+  document.querySelectorAll('.diff').forEach(x=>x.classList.toggle('sel', x.dataset.d===diff));
 });
 document.getElementById('mute').onclick=function(){ muted=!muted; this.textContent=muted?'🔇':'🔊'; };
+
+// ---- start-screen mode switching ----
+function showPanel(id){
+  document.getElementById('modeView').style.display = id?'none':'flex';
+  ['singlePanel','hostPanel','joinPanel'].forEach(p=>document.getElementById(p).classList.toggle('show', p===id));
+}
+document.getElementById('modeSingle').onclick=()=>showPanel('singlePanel');
+document.getElementById('modeHost').onclick=()=>{ showPanel('hostPanel'); hostGame(); };
+document.getElementById('modeJoin').onclick=()=>showPanel('joinPanel');
+document.querySelectorAll('[data-back]').forEach(b=>b.onclick=()=>{ leaveNet(); showPanel(null); });
+document.getElementById('hostStart').onclick=()=>hostStart();
+document.getElementById('joinConnect').onclick=()=>joinGame();
 
 // ====================== BUBBLES / BLASTS ======================
 function placeBubble(p){
@@ -516,13 +584,13 @@ function update(dt){
     // pick direction / action when settled on a tile
     if(!p.moving){
       let dir=null, bubble=false;
-      if(p.isHuman){
-        dir = held.length ? held[held.length-1] : null;
-        if(wantBubble){ bubble=true; }
-      } else {
+      if(p.control==='ai'){
         p.think-=dt;
         if(p.think<=0){ p.think=0.05; const a=botAct(p,danger); dir=a.dir; bubble=a.bubble; p._dir=dir; }
         else dir=p._dir;
+      } else { // human: local or remote
+        dir = (p.inHeld && p.inHeld.length) ? p.inHeld[p.inHeld.length-1] : null;
+        if(p.inBomb){ bubble=true; p.inBomb=false; }
       }
       if(bubble) placeBubble(p);
       if(dir){
@@ -548,8 +616,6 @@ function update(dt){
       }
     }
   }
-  wantBubble=false;
-
   // blast vs entities: trap fresh victims, pop already-trapped ones
   for(const p of players){
     if(!p.alive) continue;
@@ -572,9 +638,14 @@ function update(dt){
 
   // win/lose
   const alive=players.filter(p=>p.alive);
-  const human=players[0];
-  if(!human.alive) endGame(false);
-  else if(alive.length<=1) endGame(true);
+  if(netRole==='off'){
+    if(!players[0].alive) endGame(false);
+    else if(alive.length<=1) endGame(true);
+  } else { // host: match runs until one sailor remains; each device shows its own result
+    if(!deadShown && !players[mySlot].alive){ deadShown=true; showResult(false); }
+    if(alive.length<=1){ state='over'; winnerSlot = alive.length?alive[0].slot:-1;
+      if(!deadShown){ deadShown=true; showResult(winnerSlot===mySlot); } }
+  }
 }
 
 // ====================== RENDER ======================
@@ -627,7 +698,7 @@ function drawShip(){
 
 // ---- characters ----
 function drawCap(p,cx,topY){
-  if(p.isHuman){ // pirate captain tricorn
+  if(p.captain){ // pirate captain tricorn (player 1 / host)
     ctx.fillStyle='#1c1c22';
     ctx.beginPath(); ctx.moveTo(cx-17,topY+4);
     ctx.quadraticCurveTo(cx,topY-15,cx+17,topY+4);
@@ -728,8 +799,8 @@ function render(){
       // depleting timer arc
       ctx.strokeStyle=flash?'rgba(255,80,80,.98)':(danger?'rgba(255,160,80,.98)':'rgba(120,220,255,.98)');
       ctx.lineWidth=3.5; ctx.beginPath(); ctx.arc(cx,cy,r,-Math.PI/2,-Math.PI/2+frac*Math.PI*2); ctx.stroke();
-      // your escape progress (green) + prompt
-      if(p.isHuman){
+      // your escape progress (green) + prompt — only on YOUR own sailor
+      if(p.slot===mySlot){
         if(p.struggle>0){ ctx.strokeStyle='rgba(120,255,150,.98)'; ctx.lineWidth=3.5;
           ctx.beginPath(); ctx.arc(cx,cy,r-5,-Math.PI/2,-Math.PI/2+Math.min(1,p.struggle/ESCAPE_NEED)*Math.PI*2); ctx.stroke(); }
         ctx.fillStyle=flash?'#ff5a5a':'#fff'; ctx.font='bold 11px sans-serif'; ctx.textAlign='center';
@@ -737,8 +808,8 @@ function render(){
       }
     }
   }
-  // HUD: human power-ups
-  const me=players[0];
+  // HUD: your power-ups
+  const me=players[mySlot]||players[0];
   if(me){
     ctx.fillStyle='rgba(8,16,30,.55)'; roundRect(6,6,150,26,8); ctx.fill();
     ctx.font='15px sans-serif'; ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.fillStyle='#fff';
@@ -748,10 +819,119 @@ function render(){
   }
 }
 
+// ====================== NETWORK (online via WebRTC / PeerJS) ======================
+// STUN + free TURN so peers connect even across different networks/NATs
+const ICE = { iceServers: [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'turn:openrelay.metered.ca:80', username:'openrelayproject', credential:'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443', username:'openrelayproject', credential:'openrelayproject' }
+]};
+function loadPeerJS(){
+  return new Promise((res,rej)=>{
+    if(window.Peer) return res();
+    const s=document.createElement('script');
+    s.src='https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
+    s.onload=()=>res(); s.onerror=()=>rej(new Error('Could not load multiplayer (check your internet).'));
+    document.head.appendChild(s);
+  });
+}
+function makeCode(){ const c='ABCDEFGHJKMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<4;i++) s+=c[Math.floor(Math.random()*c.length)]; return s; }
+function leaveNet(){ try{ if(peer) peer.destroy(); }catch(e){} peer=null; conns=[]; hostConn=null; netRole='off'; mySlot=0; }
+
+// ---- HOST ----
+async function hostGame(){
+  const st=document.getElementById('hostStatus'); st.textContent='Connecting…';
+  document.getElementById('roomCode').textContent='…';
+  try{ await loadPeerJS(); }catch(e){ st.textContent=e.message; return; }
+  const code=makeCode();
+  netRole='host'; mySlot=0; conns=[];
+  peer=new Peer('bnb-'+code,{debug:0, config:ICE});
+  peer.on('open',()=>{ document.getElementById('roomCode').textContent=code; st.textContent='Share the code, then tap START.'; updateHostLobby(); });
+  peer.on('error',e=>{ st.textContent = e.type==='unavailable-id' ? 'Code clash — go back and retry.' : ('Network error: '+e.type); });
+  peer.on('connection',c=>{
+    if(conns.length>=3 || state==='playing'){ c.on('open',()=>c.close()); return; }
+    c.on('open',()=>{ conns.push(c); updateHostLobby(); });
+    c.on('data',d=>onHostData(c,d));
+    c.on('close',()=>{ conns=conns.filter(x=>x!==c); updateHostLobby(); });
+  });
+}
+function updateHostLobby(){ const el=document.getElementById('hostLobby'); if(el) el.textContent='Sailors: '+(1+conns.length)+' / 4   (empty seats = bots)'; }
+function onHostData(c,d){
+  if(d.t==='in' && c._slot!=null && players){
+    const p=players[c._slot]; if(!p) return;
+    if(p.trapped && d.dir && p._lastHeld!==d.dir) p.struggle+=0.18; // remote wiggle
+    p.inHeld = d.dir?[d.dir]:[]; if(d.bomb) p.inBomb=true; p._lastHeld=d.dir||null;
+  }
+}
+function hostStart(){
+  const controls=['local']; conns.forEach((c,i)=>{ c._slot=i+1; controls.push('remote'); });
+  while(controls.length<4) controls.push('ai');
+  reset(controls); state='playing'; winnerSlot=-1; deadShown=false; hideOverlays();
+  const m=mapMsg();
+  conns.forEach(c=>{ try{ c.send({t:'start', slot:c._slot, map:m}); }catch(e){} });
+}
+function mapMsg(){ return { grid:grid.map(r=>r.join('')), cannons:[...cannonSet], ships:[...shipSet], shipCenter }; }
+function snapshot(){
+  return { t:'s', gs:state, win:winnerSlot,
+    grid: grid.map(r=>r.join('')),
+    players: players.map(p=>({slot:p.slot,captain:p.captain,tx:p.tx,ty:p.ty,fx:p.fx,fy:p.fy,tox:p.tox,toy:p.toy,
+      t:p.t,moving:p.moving,dir:p.dir,alive:p.alive,trapped:p.trapped,trapTimer:p.trapTimer,struggle:p.struggle,
+      range:p.range,maxBubbles:p.maxBubbles,speed:p.speed,isHuman:p.isHuman,capColor:p.capColor,anim:p.anim,color:SKIN,colorLight:SKIN_LT})),
+    bubbles: bubbles.map(b=>({x:b.x,y:b.y,fuse:b.fuse,range:b.range})),
+    blasts: blasts.map(b=>({x:b.x,y:b.y,timer:b.timer})),
+    powerups: powerups.map(p=>({x:p.x,y:p.y,type:p.type})) };
+}
+function hostBroadcast(){ if(!conns.length) return; const s=snapshot(); conns.forEach(c=>{ try{ c.send(s); }catch(e){} }); }
+
+// ---- CLIENT ----
+async function joinGame(){
+  const st=document.getElementById('joinStatus');
+  const code=(document.getElementById('joinCode').value||'').trim().toUpperCase();
+  if(code.length<3){ st.textContent='Type the room code first.'; return; }
+  st.textContent='Connecting…';
+  try{ await loadPeerJS(); }catch(e){ st.textContent=e.message; return; }
+  netRole='client';
+  peer=new Peer({debug:0, config:ICE});
+  peer.on('open',()=>{
+    hostConn=peer.connect('bnb-'+code,{reliable:true});
+    hostConn.on('open',()=>{ st.textContent='Connected! Waiting for host to start…'; });
+    hostConn.on('data',d=>onClientData(d));
+    hostConn.on('close',()=>{ st.textContent='Host disconnected.'; });
+  });
+  peer.on('error',e=>{ st.textContent = e.type==='peer-unavailable' ? 'Room not found — check the code.' : ('Network error: '+e.type); });
+}
+function onClientData(d){
+  if(d.t==='start'){ mySlot=d.slot; applyMap(d.map); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
+  else if(d.t==='s'){
+    grid=d.grid.map(s=>s.split('').map(Number));
+    players=d.players; bubbles=d.bubbles; blasts=d.blasts; powerups=d.powerups;
+    state=d.gs; winnerSlot=d.win;
+    const me=players[mySlot];
+    if(d.gs==='over'){ if(!deadShown){ deadShown=true; showResult(winnerSlot===mySlot); } }
+    else if(me && !me.alive && !deadShown){ deadShown=true; showResult(false); }
+  }
+}
+function applyMap(m){ grid=m.grid.map(s=>s.split('').map(Number)); cannonSet=new Set(m.cannons); shipSet=new Set(m.ships); shipCenter=m.shipCenter; }
+function netSendInput(){
+  if(!hostConn||!hostConn.open) return;
+  const dir = held.length?held[held.length-1]:null;
+  const bomb = wantBubble; wantBubble=false;
+  try{ hostConn.send({t:'in', dir, bomb}); }catch(e){}
+}
+
 // ====================== LOOP ======================
 function loop(ts){
   const dt=Math.min(0.05,(ts-last)/1000)||0; last=ts;
-  if(state==='playing') update(dt);
+  if(netRole==='client'){
+    netSendInput();                       // clients only send input + render host's stream
+  } else {                                // single-player or host: run the simulation
+    if(state==='playing'){
+      if(players&&players[0]){ players[0].inHeld=held; if(wantBubble) players[0].inBomb=true; }
+      wantBubble=false;
+      update(dt);
+    }
+    if(netRole==='host' && state!=='start'){ netTick=(netTick+1)%2; if(!netTick) hostBroadcast(); }
+  }
   if(state!=='start') render();
   requestAnimationFrame(loop);
 }
