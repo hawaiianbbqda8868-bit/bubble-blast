@@ -73,7 +73,7 @@
     <div class="diff" data-d="hard">Hard</div>
   </div>
   <button class="play" id="playBtn">PLAY ▶</button>
-  <div class="hint">Trap a rival in your <b>water bubble</b> 🫧, then pop the bubble with another blast to knock them out. Grab <b>💧 range</b>, <b>🫧 extra bubbles</b>, <b>👟 speed</b>. Last sailor standing wins!<br>Move: D-pad / arrow keys · Bubble: 🫧 / spacebar</div>
+  <div class="hint">Catch a rival in your <b>water bubble</b> 🫧 — when the bubble <b>pops, they're out!</b> If <b>you</b> get bubbled, <b>wiggle the joystick fast</b> to break free before it pops. Grab <b>💧 range</b>, <b>🫧 extra bubbles</b>, <b>👟 speed</b>. Last sailor standing wins!<br>Move: joystick / arrow keys · Bubble: 🫧 / spacebar</div>
 </div>
 
 <div class="overlay hidden" id="overScreen">
@@ -86,7 +86,8 @@
 const COLS = 15, ROWS = 13, TILE = 40;
 const FUSE = 2.0;        // bubble fuse seconds
 const BLAST_TIME = 0.5;  // water lasts
-const TRAP_TIME = 2.6;   // trapped-in-bubble duration
+const TRAP_TIME = 3.0;   // time inside the bubble before it pops (= death)
+const ESCAPE_NEED = 1.0; // how much "wiggle" breaks you free in time
 const BASE_MOVE = 0.125; // sec per tile (player) — snappy
 const POWERUP_CHANCE = 0.36;
 const BARREL_FILL = 0.78;
@@ -190,7 +191,7 @@ function makePlayer(tx,ty,isHuman,capColor,botDiff){
   return { tx,ty, fx:tx,fy:ty, tox:tx,toy:ty, t:0, moving:false, dir:'down',
     isHuman, color:SKIN, colorLight:SKIN_LT, capColor:capColor||'#1a1a1f', alive:true,
     range:1, maxBubbles:1, active:0, speed:0,
-    trapped:false, trappedBy:null, trapTimer:0,
+    trapped:false, trappedBy:null, trapTimer:0, struggle:0, escapeAt:0,
     botDiff, think:0, anim:0, target:null, targetTtl:0 };
 }
 
@@ -207,13 +208,13 @@ function reset(){
 }
 // difficulty per bot, blended with chosen level so "mixed" feels varied
 function botPlan(i){
-  const base = {easy:{move:0.23,trap:0.5,react:0.6},
-                normal:{move:0.18,trap:0.8,react:0.9},
-                hard:{move:0.14,trap:1,react:1}}[diff];
+  const base = {easy:{move:0.23,trap:0.5,react:0.6,esc:0.25},
+                normal:{move:0.18,trap:0.8,react:0.9,esc:0.45},
+                hard:{move:0.14,trap:1,react:1,esc:0.6}}[diff];
   const spice=[{move:+0.05,trap:-0.15},{move:0,trap:0},{move:-0.03,trap:+0.1}][i];
   return { move:Math.max(0.1,base.move+spice.move),
            trap:Math.min(1,Math.max(0,base.trap+spice.trap)),
-           react:base.react };
+           react:base.react, esc:base.esc };
 }
 
 function startGame(){
@@ -234,9 +235,9 @@ function endGame(win){
 const held=[]; let wantBubble=false;
 function pressDir(d){ if(!held.includes(d)) held.push(d); mashEscape(); }
 function releaseDir(d){ const i=held.indexOf(d); if(i>=0) held.splice(i,1); }
-function mashEscape(){ // tapping while trapped helps you wriggle free
+function mashEscape(){ // wiggling while trapped builds your escape
   const me=players[0];
-  if(me && me.trapped) me.trapTimer=Math.max(0, me.trapTimer-0.35);
+  if(me && me.trapped) me.struggle += 0.16;
 }
 const KEYMAP={ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',
   w:'up',s:'down',a:'left',d:'right',W:'up',S:'down',A:'left',D:'right'};
@@ -469,7 +470,10 @@ function update(dt){
 
     if(p.trapped){
       p.trapTimer-=dt;
-      if(p.trapTimer<=0){ p.trapped=false; p.trappedBy=null; }
+      const elapsed=TRAP_TIME-p.trapTimer;
+      const freed = p.isHuman ? (p.struggle>=ESCAPE_NEED) : (elapsed>=p.escapeAt);
+      if(freed){ p.trapped=false; p.trappedBy=null; p.struggle=0; }   // wriggled out alive
+      else if(p.trapTimer<=0){ p.alive=false; sfx.pop(); }            // bubble popped -> out
       continue; // can't move while trapped
     }
 
@@ -521,7 +525,9 @@ function update(dt){
         p.alive=false; if(p.isHuman) sfx.pop(); else sfx.pop();
       }
     } else {
-      p.trapped=true; p.trappedBy=hits[0].id; p.trapTimer=TRAP_TIME;
+      p.trapped=true; p.trappedBy=hits[0].id; p.trapTimer=TRAP_TIME; p.struggle=0;
+      // humans escape only by wiggling; bots get a difficulty-based chance
+      p.escapeAt = p.isHuman ? 999 : ((Math.random()<p.botDiff.esc) ? (0.7+Math.random()*1.5) : 999);
       p.moving=false; p.tx=x; p.ty=y;
       sfx.trap();
     }
@@ -676,12 +682,22 @@ function render(){
     if(p.moving){ cx=(p.fx+(p.tox-p.fx)*p.t)*TILE+TILE/2; cy=(p.fy+(p.toy-p.fy)*p.t)*TILE+TILE/2; }
     else { cx=p.tx*TILE+TILE/2; cy=p.ty*TILE+TILE/2; }
     drawCharacter(p,cx,cy);
-    // trapped bubble overlay
+    // trapped bubble overlay — countdown ring (pop = death), wiggle to escape
     if(p.trapped){
-      const fl=p.trapTimer<0.8 && Math.floor(performance.now()/100)%2===0;
-      ctx.strokeStyle=fl?'rgba(255,120,120,.95)':'rgba(150,230,255,.95)';
-      ctx.lineWidth=3; ctx.beginPath(); ctx.arc(cx,cy,TILE*0.46,0,7); ctx.stroke();
-      ctx.fillStyle='rgba(150,220,255,.22)'; ctx.beginPath(); ctx.arc(cx,cy,TILE*0.46,0,7); ctx.fill();
+      const r=TILE*0.46, frac=Math.max(0,p.trapTimer/TRAP_TIME), danger=p.trapTimer<1.0;
+      const flash=danger && Math.floor(performance.now()/90)%2===0;
+      ctx.fillStyle='rgba(150,220,255,.22)'; ctx.beginPath(); ctx.arc(cx,cy,r,0,7); ctx.fill();
+      ctx.strokeStyle='rgba(255,255,255,.35)'; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(cx,cy,r,0,7); ctx.stroke();
+      // depleting timer arc
+      ctx.strokeStyle=flash?'rgba(255,80,80,.98)':(danger?'rgba(255,160,80,.98)':'rgba(120,220,255,.98)');
+      ctx.lineWidth=3.5; ctx.beginPath(); ctx.arc(cx,cy,r,-Math.PI/2,-Math.PI/2+frac*Math.PI*2); ctx.stroke();
+      // your escape progress (green) + prompt
+      if(p.isHuman){
+        if(p.struggle>0){ ctx.strokeStyle='rgba(120,255,150,.98)'; ctx.lineWidth=3.5;
+          ctx.beginPath(); ctx.arc(cx,cy,r-5,-Math.PI/2,-Math.PI/2+Math.min(1,p.struggle/ESCAPE_NEED)*Math.PI*2); ctx.stroke(); }
+        ctx.fillStyle=flash?'#ff5a5a':'#fff'; ctx.font='bold 11px sans-serif'; ctx.textAlign='center';
+        ctx.fillText('WIGGLE!', cx, cy-r-5);
+      }
     }
   }
   // HUD: human power-ups
