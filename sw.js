@@ -1,5 +1,5 @@
 // Offline cache so the game works with no internet once loaded.
-const CACHE = 'bnb-v4';
+const CACHE = 'bnb-v5';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', e => {

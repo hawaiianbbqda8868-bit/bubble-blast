@@ -208,9 +208,9 @@ function reset(){
 }
 // difficulty per bot, blended with chosen level so "mixed" feels varied
 function botPlan(i){
-  const base = {easy:{move:0.23,trap:0.5,react:0.6,esc:0.25},
-                normal:{move:0.18,trap:0.8,react:0.9,esc:0.45},
-                hard:{move:0.14,trap:1,react:1,esc:0.6}}[diff];
+  const base = {easy:{move:0.27,trap:0.3,react:0.3,esc:0.2},
+                normal:{move:0.20,trap:0.55,react:0.55,esc:0.4},
+                hard:{move:0.15,trap:0.9,react:0.85,esc:0.6}}[diff];
   const spice=[{move:+0.05,trap:-0.15},{move:0,trap:0},{move:-0.03,trap:+0.1}][i];
   return { move:Math.max(0.1,base.move+spice.move),
            trap:Math.min(1,Math.max(0,base.trap+spice.trap)),
@@ -324,9 +324,10 @@ function bfsStep(sx,sy,isGoal,canEnter){
       if(!canEnter(nx,ny)) continue;
       seen.add(k); from.set(k,{px:cx,py:cy,dir:name});
       if(isGoal(nx,ny)){
-        let cur={px:nx,py:ny,dir:name}, step=cur;
-        while(!(cur.px===sx&&cur.py===sy)){ step=cur; cur=from.get(key(cur.px,cur.py)); if(!cur) break; }
-        return step.dir;
+        // walk back to the start; return the FIRST step's direction
+        let e=from.get(k);
+        while(!(e.px===sx&&e.py===sy)) e=from.get(key(e.px,e.py));
+        return e.dir;
       }
       q.push([nx,ny]);
     }
