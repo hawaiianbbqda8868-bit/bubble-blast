@@ -824,26 +824,17 @@ function render(){
   }
 }
 
-// ====================== NETWORK (online via a public MQTT relay over WebSocket) ======================
-// WebSocket to a public broker always connects through NATs — no fragile P2P handshake.
-const MQTT_URL='wss://broker.emqx.io:8084/mqtt';
-let mqc=null, myCid=null, slotByCid={}, helloTimer=null, roomBase=null, lastInDir='_', lastInT=0;
-function loadMqtt(){
-  return new Promise((res,rej)=>{
-    if(window.mqtt) return res();
-    const s=document.createElement('script');
-    s.src='https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js';
-    s.onload=()=>res(); s.onerror=()=>rej(new Error('Could not load multiplayer (check your internet).'));
-    document.head.appendChild(s);
-  });
-}
+// ====================== NETWORK (online via dedicated WebSocket relay on Railway) ======================
+const RELAY_URL='wss://bubble-blast-relay-production.up.railway.app';
+let ws=null, myCid=null, slotByCid={}, helloTimer=null, room=null, lastInDir='_', lastInT=0;
 function makeCode(){ const c='ABCDEFGHJKMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<4;i++) s+=c[Math.floor(Math.random()*c.length)]; return s; }
 function rid(){ return Math.random().toString(36).slice(2,9); }
-function leaveNet(){ try{ if(mqc) mqc.end(true); }catch(e){} mqc=null; netRole='off'; mySlot=0; slotByCid={}; if(helloTimer) clearInterval(helloTimer); }
+function leaveNet(){ try{ if(ws) ws.close(); }catch(e){} ws=null; netRole='off'; mySlot=0; slotByCid={}; if(helloTimer) clearInterval(helloTimer); }
+function wsSend(o){ if(ws && ws.readyState===1){ try{ ws.send(JSON.stringify(o)); }catch(e){} } }
 function mapMsg(){ return { grid:grid.map(r=>r.join('')), cannons:[...cannonSet], ships:[...shipSet], shipCenter }; }
 function applyMap(m){ grid=m.grid.map(s=>s.split('').map(Number)); cannonSet=new Set(m.cannons); shipSet=new Set(m.ships); shipCenter=m.shipCenter; }
 function snapshot(){
-  return { gs:state, win:winnerSlot,
+  return { k:'state', gs:state, win:winnerSlot,
     grid: grid.map(r=>r.join('')),
     players: players.map(p=>({slot:p.slot,captain:p.captain,tx:p.tx,ty:p.ty,fx:p.fx,fy:p.fy,tox:p.tox,toy:p.toy,
       t:p.t,moving:p.moving,dir:p.dir,alive:p.alive,trapped:p.trapped,trapTimer:p.trapTimer,struggle:p.struggle,
@@ -854,71 +845,68 @@ function snapshot(){
 }
 
 // ---- HOST ----
-async function hostGame(){
+function hostGame(){
   const st=document.getElementById('hostStatus'); st.textContent='Connecting…'; document.getElementById('roomCode').textContent='…';
-  try{ await loadMqtt(); }catch(e){ st.textContent=e.message; return; }
-  const code=makeCode(); netRole='host'; mySlot=0; slotByCid={};
-  roomBase='bbnb2026/'+code;
-  mqc=mqtt.connect(MQTT_URL,{clientId:'h_'+rid(),clean:true,keepalive:30,connectTimeout:9000,reconnectPeriod:3000});
-  mqc.on('connect',()=>{ document.getElementById('roomCode').textContent=code; st.textContent='Share the code, then tap START.';
-    mqc.subscribe(roomBase+'/hello'); mqc.subscribe(roomBase+'/input'); updateHostLobby(); });
-  mqc.on('error',()=>{ st.textContent='Network error — go back and retry.'; });
-  mqc.on('message',(t,payload)=>{
-    let d; try{ d=JSON.parse(payload.toString()); }catch(e){ return; }
-    if(t===roomBase+'/hello'){
+  const code=makeCode(); netRole='host'; mySlot=0; slotByCid={}; room='bbnb/'+code;
+  ws=new WebSocket(RELAY_URL);
+  ws.onopen=()=>{ wsSend({k:'join',room}); document.getElementById('roomCode').textContent=code;
+    st.textContent='Share the code, then tap START.'; updateHostLobby(); };
+  ws.onerror=()=>{ st.textContent='Network error — go back and retry.'; };
+  ws.onmessage=ev=>{
+    let d; try{ d=JSON.parse(ev.data); }catch(e){ return; }
+    if(d.k==='hello'){
       if(state==='playing') return;
       if(!(d.cid in slotByCid)){
         const used=Object.values(slotByCid); let slot=-1;
         for(let s=1;s<=3;s++){ if(!used.includes(s)){ slot=s; break; } }
         if(slot<0) return; slotByCid[d.cid]=slot;
       }
-      mqc.publish(roomBase+'/welcome', JSON.stringify({cid:d.cid, slot:slotByCid[d.cid]}));
+      wsSend({k:'welcome', cid:d.cid, slot:slotByCid[d.cid]});
       updateHostLobby();
-    } else if(t===roomBase+'/input'){
+    } else if(d.k==='input'){
       const p=players&&players[d.slot];
       if(p && p.control==='remote'){
         if(p.trapped && d.dir && p._lastHeld!==d.dir) p.struggle+=0.18; // remote wiggle
         p.inHeld = d.dir?[d.dir]:[]; if(d.bomb) p.inBomb=true; p._lastHeld=d.dir||null;
       }
     }
-  });
+  };
 }
 function updateHostLobby(){ const el=document.getElementById('hostLobby'); if(el) el.textContent='Sailors: '+(1+Object.keys(slotByCid).length)+' / 4   (empty seats = bots)'; }
 function hostStart(){
   const controls=['local','ai','ai','ai'];
   Object.values(slotByCid).forEach(s=>{ if(s>=1&&s<=3) controls[s]='remote'; });
   reset(controls); state='playing'; winnerSlot=-1; deadShown=false; hideOverlays();
-  if(mqc) mqc.publish(roomBase+'/start', JSON.stringify({map:mapMsg()}));
+  wsSend({k:'start', map:mapMsg()});
 }
 function hostBroadcast(){
-  if(netRole!=='host' || !mqc || !Object.keys(slotByCid).length) return;
-  mqc.publish(roomBase+'/state', JSON.stringify(snapshot()));
+  if(netRole!=='host' || !ws || !Object.keys(slotByCid).length) return;
+  wsSend(snapshot());
 }
 
 // ---- CLIENT ----
-async function joinGame(){
+function joinGame(){
   const st=document.getElementById('joinStatus');
   const code=(document.getElementById('joinCode').value||'').trim().toUpperCase();
   if(code.length<3){ st.textContent='Type the room code first.'; return; }
   st.textContent='Connecting…';
-  try{ await loadMqtt(); }catch(e){ st.textContent=e.message; return; }
-  netRole='client'; myCid='c_'+rid(); mySlot=0; roomBase='bbnb2026/'+code;
-  mqc=mqtt.connect(MQTT_URL,{clientId:myCid,clean:true,keepalive:30,connectTimeout:9000,reconnectPeriod:3000});
-  mqc.on('connect',()=>{
-    mqc.subscribe(roomBase+'/welcome'); mqc.subscribe(roomBase+'/start'); mqc.subscribe(roomBase+'/state');
-    st.textContent='Looking for room…';
-    const hello=()=>{ try{ mqc.publish(roomBase+'/hello', JSON.stringify({cid:myCid})); }catch(e){} };
+  netRole='client'; myCid='c_'+rid(); mySlot=0; room='bbnb/'+code;
+  ws=new WebSocket(RELAY_URL);
+  ws.onopen=()=>{
+    wsSend({k:'join',room}); st.textContent='Looking for room…';
+    const hello=()=>wsSend({k:'hello', cid:myCid});
     hello(); if(helloTimer) clearInterval(helloTimer);
     helloTimer=setInterval(()=>{ if(mySlot>0){ clearInterval(helloTimer); } else hello(); }, 1200);
-  });
-  mqc.on('error',()=>{ st.textContent='Network error — go back and retry.'; });
-  mqc.on('message',(t,payload)=>{
-    let d; try{ d=JSON.parse(payload.toString()); }catch(e){ return; }
-    if(t===roomBase+'/welcome'){ if(d.cid===myCid && mySlot<=0){ mySlot=d.slot; if(helloTimer) clearInterval(helloTimer);
+  };
+  ws.onerror=()=>{ st.textContent='Network error — go back and retry.'; };
+  ws.onclose=()=>{ if(state==='start') st.textContent='Disconnected — go back and retry.'; };
+  ws.onmessage=ev=>{
+    let d; try{ d=JSON.parse(ev.data); }catch(e){ return; }
+    if(d.k==='welcome'){ if(d.cid===myCid && mySlot<=0){ mySlot=d.slot; if(helloTimer) clearInterval(helloTimer);
         st.textContent='Joined as Sailor '+(mySlot+1)+'! Waiting for host to start…'; } }
-    else if(t===roomBase+'/start'){ if(mySlot>0){ applyMap(d.map); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); } }
-    else if(t===roomBase+'/state'){ applySnapshot(d); }
-  });
+    else if(d.k==='start'){ if(mySlot>0){ applyMap(d.map); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); } }
+    else if(d.k==='state'){ applySnapshot(d); }
+  };
 }
 function applySnapshot(d){
   grid=d.grid.map(s=>s.split('').map(Number));
@@ -930,14 +918,14 @@ function applySnapshot(d){
   else if(me && !me.alive && !deadShown){ deadShown=true; showResult(false); }
 }
 function netSendInput(){
-  if(netRole!=='client' || !mqc || mySlot<=0) return;
+  if(netRole!=='client' || !ws || ws.readyState!==1 || mySlot<=0) return;
   const ed=effectiveDirArr();
   const dir = ed.length?ed[ed.length-1]:null;
   const bomb = wantBubble; wantBubble=false;
   const now = performance.now();
-  if(bomb || dir!==lastInDir || now-lastInT>120){    // ~throttle to changes + 8Hz heartbeat
+  if(bomb || dir!==lastInDir || now-lastInT>120){
     lastInDir=dir; lastInT=now;
-    try{ mqc.publish(roomBase+'/input', JSON.stringify({slot:mySlot, dir, bomb})); }catch(e){}
+    wsSend({k:'input', slot:mySlot, dir, bomb});
   }
 }
 
