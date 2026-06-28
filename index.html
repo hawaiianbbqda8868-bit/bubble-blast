@@ -69,6 +69,12 @@
   .status { font-size:15px; color:#bcd6f0; min-height:20px; max-width:280px; }
   .lobby { font-size:17px; color:#ffe27a; font-weight:700; }
   .smallbtn { padding:8px 16px; font-size:14px; border:none; border-radius:20px; background:rgba(255,255,255,.14); color:#cfe6ff; cursor:pointer; }
+  .colorrow { display:flex; flex-direction:column; align-items:center; gap:8px; margin-top:18px; }
+  .colorlbl { font-size:14px; color:#bcd6f0; }
+  #swatches { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; max-width:300px; }
+  .sw { width:34px; height:34px; border-radius:50%; cursor:pointer; border:3px solid transparent;
+    box-shadow:0 2px 6px rgba(0,0,0,.4); transition:transform .1s; }
+  .sw.sel { border-color:#fff; transform:scale(1.18); }
 </style>
 </head>
 <body>
@@ -82,6 +88,11 @@
 <div class="overlay" id="startScreen">
   <div class="title">泡泡堂</div>
   <div class="subtitle">Bubble Blast · 海盗 Pirate Cove</div>
+
+  <div class="colorrow">
+    <span class="colorlbl">Your color:</span>
+    <div id="swatches"></div>
+  </div>
 
   <div class="modebtns" id="modeView">
     <button class="modebtn" id="modeSingle">🏴‍☠️ Single Player</button>
@@ -143,7 +154,8 @@ const FLOOR=0, WALL=1, BARREL=2;
 const PU_RANGE=0, PU_BUBBLE=1, PU_SPEED=2;
 
 const SKIN='#fde7cf', SKIN_LT='#fff8ee';   // characters are cream-bodied
-const CAPS = ['#e23b3b','#36b85c','#3f86e8']; // bot caps: red, green, blue
+const PALETTE = ['#ff5b5b','#ff9d3a','#ffe24d','#5fe08a','#46c8ff','#7c8cff','#c77dff','#ff7ad1'];
+let myColor = (function(){ try{ return localStorage.getItem('bnbColor')||PALETTE[0]; }catch(e){ return PALETTE[0]; } })();
 
 // ====================== STATE ======================
 const cv = document.getElementById('cv');
@@ -245,17 +257,20 @@ function makePlayer(tx,ty,isHuman,capColor,botDiff){
 }
 
 // ====================== RESET / START ======================
-function reset(controls){
+function reset(controls, colors){
   controls = controls || ['local','ai','ai','ai'];
+  colors = colors || [];
   buildMap();
   bubbles=[]; blasts=[]; powerups=[]; burstCounter=0;
   const spawns=[[1,1],[COLS-2,1],[1,ROWS-2],[COLS-2,ROWS-2]];
-  const caps=['#1a1a1f',CAPS[0],CAPS[1],CAPS[2]];
-  let bi=0;
+  const used=new Set(colors.filter(Boolean));
+  const botPool=PALETTE.filter(c=>!used.has(c));
+  let bi=0, bp=0;
   players=spawns.map((s,i)=>{
     const ctrl=controls[i]||'ai';
-    const p=makePlayer(s[0],s[1], ctrl!=='ai', caps[i], ctrl==='ai'?botPlan(bi++%3):null);
-    p.control=ctrl; p.slot=i; p.captain=(i===0); p.inHeld=[]; p.inBomb=false; p._lastHeld=null;
+    let cap=colors[i] || botPool[bp++ % botPool.length] || PALETTE[i%PALETTE.length];
+    const p=makePlayer(s[0],s[1], ctrl!=='ai', cap, ctrl==='ai'?botPlan(bi++%3):null);
+    p.control=ctrl; p.slot=i; p.captain=false; p.inHeld=[]; p.inBomb=false; p._lastHeld=null;
     return p;
   });
 }
@@ -281,7 +296,7 @@ function showResult(win){
   document.getElementById('overScreen').classList.remove('hidden');
   win ? sfx.win() : sfx.lose();
 }
-function startGame(){ netRole='off'; mySlot=0; reset(); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
+function startGame(){ netRole='off'; mySlot=0; reset(['local','ai','ai','ai'],[myColor]); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
 function endGame(win){ state='over'; showResult(win); }
 
 // ====================== INPUT ======================
@@ -365,6 +380,17 @@ document.getElementById('modeJoin').onclick=()=>showPanel('joinPanel');
 document.querySelectorAll('[data-back]').forEach(b=>b.onclick=()=>{ leaveNet(); showPanel(null); });
 document.getElementById('hostStart').onclick=()=>hostStart();
 document.getElementById('joinConnect').onclick=()=>joinGame();
+
+// ---- color picker ----
+(function(){
+  const wrap=document.getElementById('swatches');
+  PALETTE.forEach(c=>{
+    const el=document.createElement('div'); el.className='sw'+(c===myColor?' sel':''); el.style.background=c;
+    el.onclick=()=>{ myColor=c; try{ localStorage.setItem('bnbColor',c); }catch(e){}
+      [...wrap.children].forEach(x=>x.classList.toggle('sel', x===el)); };
+    wrap.appendChild(el);
+  });
+})();
 
 // ====================== BUBBLES / BLASTS ======================
 function placeBubble(p){
@@ -703,22 +729,12 @@ function drawShip(){
 
 // ---- characters ----
 function drawCap(p,cx,topY){
-  if(p.captain){ // pirate captain tricorn (player 1 / host)
-    ctx.fillStyle='#1c1c22';
-    ctx.beginPath(); ctx.moveTo(cx-17,topY+4);
-    ctx.quadraticCurveTo(cx,topY-15,cx+17,topY+4);
-    ctx.quadraticCurveTo(cx,topY+1,cx-17,topY+4); ctx.closePath(); ctx.fill();
-    ctx.strokeStyle='#e8c24a'; ctx.lineWidth=2;
-    ctx.beginPath(); ctx.moveTo(cx-15,topY+3); ctx.quadraticCurveTo(cx,topY-12,cx+15,topY+3); ctx.stroke();
-    ctx.fillStyle='#fff'; ctx.font='9px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText('☠',cx,topY-3);
-  } else { // colored dome cap with white spots
-    ctx.fillStyle=p.capColor;
-    ctx.beginPath(); ctx.arc(cx,topY+4,13,Math.PI,2*Math.PI); ctx.fill();
-    ctx.fillRect(cx-13,topY+3,26,4);
-    ctx.fillStyle='rgba(255,255,255,.9)';
-    ctx.beginPath(); ctx.arc(cx-5,topY,2.1,0,7); ctx.arc(cx+5,topY+1,1.7,0,7); ctx.arc(cx+1,topY-3,1.5,0,7); ctx.fill();
-  }
+  // colored dome cap with white spots (color chosen by the player)
+  ctx.fillStyle=p.capColor;
+  ctx.beginPath(); ctx.arc(cx,topY+4,13,Math.PI,2*Math.PI); ctx.fill();
+  ctx.fillRect(cx-13,topY+3,26,4);
+  ctx.fillStyle='rgba(255,255,255,.9)';
+  ctx.beginPath(); ctx.arc(cx-5,topY,2.1,0,7); ctx.arc(cx+5,topY+1,1.7,0,7); ctx.arc(cx+1,topY-3,1.5,0,7); ctx.fill();
 }
 function drawCharacter(p,cx,cy){
   const R=TILE*0.32, dir=p.dir||'down';
@@ -742,6 +758,12 @@ function drawCharacter(p,cx,cy){
   ctx.strokeStyle='#7a4a2a'; ctx.lineWidth=1.5;
   ctx.beginPath(); ctx.arc(cx,by+4,3,0.15*Math.PI,0.85*Math.PI); ctx.stroke();
   drawCap(p,cx,by-R+3);
+  if(p.slot===mySlot){ // little arrow marking YOUR sailor
+    const ay=cy-R-10+Math.sin(performance.now()/200)*1.5;
+    ctx.fillStyle='#ffe24d'; ctx.strokeStyle='rgba(0,0,0,.35)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(cx,ay+8); ctx.lineTo(cx-6,ay-2); ctx.lineTo(cx+6,ay-2); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+  }
 }
 
 function render(){
@@ -826,10 +848,10 @@ function render(){
 
 // ====================== NETWORK (online via dedicated WebSocket relay on Railway) ======================
 const RELAY_URL='wss://bubble-blast-relay-production.up.railway.app';
-let ws=null, myCid=null, slotByCid={}, helloTimer=null, room=null, lastInDir='_', lastInT=0;
+let ws=null, myCid=null, slotByCid={}, colorByCid={}, helloTimer=null, room=null, lastInDir='_', lastInT=0;
 function makeCode(){ const c='ABCDEFGHJKMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<4;i++) s+=c[Math.floor(Math.random()*c.length)]; return s; }
 function rid(){ return Math.random().toString(36).slice(2,9); }
-function leaveNet(){ try{ if(ws) ws.close(); }catch(e){} ws=null; netRole='off'; mySlot=0; slotByCid={}; if(helloTimer) clearInterval(helloTimer); }
+function leaveNet(){ try{ if(ws) ws.close(); }catch(e){} ws=null; netRole='off'; mySlot=0; slotByCid={}; colorByCid={}; if(helloTimer) clearInterval(helloTimer); }
 function wsSend(o){ if(ws && ws.readyState===1){ try{ ws.send(JSON.stringify(o)); }catch(e){} } }
 function mapMsg(){ return { grid:grid.map(r=>r.join('')), cannons:[...cannonSet], ships:[...shipSet], shipCenter }; }
 function applyMap(m){ grid=m.grid.map(s=>s.split('').map(Number)); cannonSet=new Set(m.cannons); shipSet=new Set(m.ships); shipCenter=m.shipCenter; }
@@ -861,6 +883,7 @@ function hostGame(){
         for(let s=1;s<=3;s++){ if(!used.includes(s)){ slot=s; break; } }
         if(slot<0) return; slotByCid[d.cid]=slot;
       }
+      colorByCid[d.cid]=d.color||PALETTE[0];
       wsSend({k:'welcome', cid:d.cid, slot:slotByCid[d.cid]});
       updateHostLobby();
     } else if(d.k==='input'){
@@ -874,9 +897,9 @@ function hostGame(){
 }
 function updateHostLobby(){ const el=document.getElementById('hostLobby'); if(el) el.textContent='Sailors: '+(1+Object.keys(slotByCid).length)+' / 4   (empty seats = bots)'; }
 function hostStart(){
-  const controls=['local','ai','ai','ai'];
-  Object.values(slotByCid).forEach(s=>{ if(s>=1&&s<=3) controls[s]='remote'; });
-  reset(controls); state='playing'; winnerSlot=-1; deadShown=false; hideOverlays();
+  const controls=['local','ai','ai','ai'], colors=[myColor];
+  Object.keys(slotByCid).forEach(cid=>{ const s=slotByCid[cid]; if(s>=1&&s<=3){ controls[s]='remote'; colors[s]=colorByCid[cid]; } });
+  reset(controls, colors); state='playing'; winnerSlot=-1; deadShown=false; hideOverlays();
   wsSend({k:'start', map:mapMsg()});
 }
 function hostBroadcast(){
@@ -894,7 +917,7 @@ function joinGame(){
   ws=new WebSocket(RELAY_URL);
   ws.onopen=()=>{
     wsSend({k:'join',room}); st.textContent='Looking for room…';
-    const hello=()=>wsSend({k:'hello', cid:myCid});
+    const hello=()=>wsSend({k:'hello', cid:myCid, color:myColor});
     hello(); if(helloTimer) clearInterval(helloTimer);
     helloTimer=setInterval(()=>{ if(mySlot>0){ clearInterval(helloTimer); } else hello(); }, 1200);
   };
