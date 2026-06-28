@@ -905,7 +905,8 @@ function snapshot(){
     grid: grid.map(r=>r.join('')),
     players: players.map(p=>({slot:p.slot,captain:p.captain,tx:p.tx,ty:p.ty,fx:p.fx,fy:p.fy,tox:p.tox,toy:p.toy,
       t:p.t,moving:p.moving,dir:p.dir,alive:p.alive,trapped:p.trapped,trapTimer:p.trapTimer,struggle:p.struggle,
-      range:p.range,maxBubbles:p.maxBubbles,speed:p.speed,isHuman:p.isHuman,capColor:p.capColor,anim:p.anim,color:SKIN,colorLight:SKIN_LT})),
+      range:p.range,maxBubbles:p.maxBubbles,speed:p.speed,isHuman:p.isHuman,capColor:p.capColor,anim:p.anim,
+      md:(p.isHuman?moveDur(p):botMoveDur(p)),color:SKIN,colorLight:SKIN_LT})),
     bubbles: bubbles.map(b=>({x:b.x,y:b.y,fuse:b.fuse,range:b.range})),
     blasts: blasts.map(b=>({x:b.x,y:b.y,timer:b.timer})),
     powerups: powerups.map(p=>({x:p.x,y:p.y,type:p.type})) };
@@ -979,6 +980,19 @@ function joinGame(){
     else if(d.k==='state'){ applySnapshot(d); }
   };
 }
+// Smoothly carry motion + anim between (sparse) host snapshots so the
+// joiner renders at 60fps instead of jumping at the snapshot rate.
+function clientAdvance(dt){
+  if(!players) return;
+  for(const p of players){
+    if(!p) continue;
+    p.anim=(p.anim||0)+dt;
+    if(p.alive && p.moving && !p.trapped){
+      p.t=(p.t||0)+dt/(p.md||0.15);
+      if(p.t>1) p.t=1;
+    }
+  }
+}
 function applySnapshot(d){
   grid=d.grid.map(s=>s.split('').map(Number));
   players=d.players; bubbles=d.bubbles; blasts=d.blasts; powerups=d.powerups;
@@ -1004,7 +1018,8 @@ function netSendInput(){
 function loop(ts){
   const dt=Math.min(0.05,(ts-last)/1000)||0; last=ts;
   if(netRole==='client'){
-    netSendInput();                       // clients only send input + render host's stream
+    netSendInput();                       // send input; smooth-render the host's stream
+    if(state==='playing') clientAdvance(dt);
   } else {                                // single-player or host: run the simulation
     if(state==='playing'){
       if(players&&players[0]){ players[0].inHeld=effectiveDirArr(); if(wantBubble) players[0].inBomb=true; }
@@ -1012,7 +1027,7 @@ function loop(ts){
       update(dt);
       if(players&&players[0]&&players[0].moving) bufferDir=null; // buffered tap consumed once it moves
     }
-    if(netRole==='host' && state!=='start'){ netTick=(netTick+1)%4; if(!netTick) hostBroadcast(); }
+    if(netRole==='host' && state!=='start'){ netTick=(netTick+1)%2; if(!netTick) hostBroadcast(); } // ~30Hz
   }
   if(state!=='start') render();
   requestAnimationFrame(loop);
