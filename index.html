@@ -54,6 +54,14 @@
   .diff.sel { border-color:#ffe27a; background:rgba(255,226,122,.16); color:#fff; }
   #mute { position:fixed; top:16px; right:16px; z-index:40; width:46px; height:46px; border:none;
     border-radius:50%; background:rgba(255,255,255,.12); color:#fff; font-size:22px; }
+  #menuBtn { position:fixed; top:16px; left:16px; z-index:40; height:46px; padding:0 16px; border:none;
+    border-radius:23px; background:rgba(255,255,255,.12); color:#fff; font-size:15px; font-weight:700; }
+  .roomlist { display:flex; flex-direction:column; gap:8px; width:100%; max-height:190px; overflow-y:auto; }
+  .roombtn { padding:13px 16px; border-radius:12px; border:none; background:rgba(255,255,255,.12); color:#fff;
+    font-size:18px; font-weight:700; letter-spacing:2px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; }
+  .roombtn:active { background:rgba(255,255,255,.28); }
+  .roombtn .n { font-size:13px; font-weight:600; color:#bcd6f0; letter-spacing:0; }
+  .roomempty { font-size:14px; color:#7e96b5; padding:6px; }
 
   /* online / mode UI */
   .modebtns { display:flex; flex-direction:column; gap:13px; margin-top:26px; width:290px; max-width:82vw; }
@@ -81,6 +89,7 @@
 <div id="game"><canvas id="cv"></canvas></div>
 
 <button id="mute">🔊</button>
+<button id="menuBtn">≡ Menu</button>
 
 <div class="pad" id="stick"><div id="knob"></div></div>
 <div class="pad" id="bombwrap"><button id="bomb">🫧</button></div>
@@ -125,6 +134,9 @@
   </div>
 
   <div class="panel" id="joinPanel">
+    <div class="status">Open rooms — tap one to join:</div>
+    <div id="roomList" class="roomlist"><div class="roomempty">Looking for rooms…</div></div>
+    <div class="status">…or enter a code:</div>
     <input class="netinput" id="joinCode" placeholder="CODE" maxlength="8" autocapitalize="characters" autocomplete="off">
     <button class="play" id="joinConnect">JOIN ▶</button>
     <div class="status" id="joinStatus"></div>
@@ -137,6 +149,7 @@
 <div class="overlay hidden" id="overScreen">
   <div class="result" id="resultText">YOU WIN</div>
   <button class="play" id="againBtn">PLAY AGAIN ▶</button>
+  <button class="smallbtn" id="overMenu">← Menu</button>
 </div>
 
 <script>
@@ -376,10 +389,40 @@ function showPanel(id){
 }
 document.getElementById('modeSingle').onclick=()=>showPanel('singlePanel');
 document.getElementById('modeHost').onclick=()=>{ showPanel('hostPanel'); hostGame(); };
-document.getElementById('modeJoin').onclick=()=>showPanel('joinPanel');
-document.querySelectorAll('[data-back]').forEach(b=>b.onclick=()=>{ leaveNet(); showPanel(null); });
+document.getElementById('modeJoin').onclick=()=>{ showPanel('joinPanel'); startBrowse(); };
+document.querySelectorAll('[data-back]').forEach(b=>b.onclick=()=>{ stopBrowse(); leaveNet(); showPanel(null); });
 document.getElementById('hostStart').onclick=()=>hostStart();
-document.getElementById('joinConnect').onclick=()=>joinGame();
+document.getElementById('joinConnect').onclick=()=>{ stopBrowse(); joinGame(); };
+document.getElementById('menuBtn').onclick=()=>toMenu();
+document.getElementById('overMenu').onclick=()=>toMenu();
+
+// ---- back-to-menu + online room browser ----
+function toMenu(){
+  stopBrowse(); leaveNet(); state='start';
+  document.getElementById('overScreen').classList.add('hidden');
+  document.getElementById('startScreen').classList.remove('hidden');
+  showPanel(null);
+}
+function stopBrowse(){ if(browseTimer){ clearInterval(browseTimer); browseTimer=null; } try{ if(browseWs) browseWs.close(); }catch(e){} browseWs=null; }
+function startBrowse(){
+  stopBrowse();
+  document.getElementById('roomList').innerHTML='<div class="roomempty">Looking for rooms…</div>';
+  browseWs=new WebSocket(RELAY_URL);
+  browseWs.onopen=()=>{ const ask=()=>{ try{ browseWs.send(JSON.stringify({k:'list'})); }catch(e){} }; ask(); browseTimer=setInterval(ask,2000); };
+  browseWs.onmessage=ev=>{ let d; try{ d=JSON.parse(ev.data); }catch(e){ return; } if(d.k==='rooms') renderRooms(d.rooms||[]); };
+  browseWs.onerror=()=>{};
+}
+function renderRooms(list){
+  const el=document.getElementById('roomList');
+  if(!list.length){ el.innerHTML='<div class="roomempty">No open rooms yet. Ask a friend to Host, or enter a code below.</div>'; return; }
+  el.innerHTML='';
+  list.forEach(r=>{
+    const b=document.createElement('button'); b.className='roombtn';
+    b.innerHTML='<span>'+r.code+'</span><span class="n">'+r.n+'/4 · tap to join</span>';
+    b.onclick=()=>{ stopBrowse(); document.getElementById('joinCode').value=r.code; joinGame(); };
+    el.appendChild(b);
+  });
+}
 
 // ---- color picker ----
 (function(){
@@ -849,9 +892,11 @@ function render(){
 // ====================== NETWORK (online via dedicated WebSocket relay on Railway) ======================
 const RELAY_URL='wss://bubble-blast-relay-production.up.railway.app';
 let ws=null, myCid=null, slotByCid={}, colorByCid={}, helloTimer=null, room=null, lastInDir='_', lastInT=0;
+let advTimer=null, browseWs=null, browseTimer=null;
 function makeCode(){ const c='ABCDEFGHJKMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<4;i++) s+=c[Math.floor(Math.random()*c.length)]; return s; }
 function rid(){ return Math.random().toString(36).slice(2,9); }
-function leaveNet(){ try{ if(ws) ws.close(); }catch(e){} ws=null; netRole='off'; mySlot=0; slotByCid={}; colorByCid={}; if(helloTimer) clearInterval(helloTimer); }
+function leaveNet(){ try{ if(ws) ws.close(); }catch(e){} ws=null; netRole='off'; mySlot=0; slotByCid={}; colorByCid={};
+  if(helloTimer) clearInterval(helloTimer); if(advTimer){ clearInterval(advTimer); advTimer=null; } }
 function wsSend(o){ if(ws && ws.readyState===1){ try{ ws.send(JSON.stringify(o)); }catch(e){} } }
 function mapMsg(){ return { grid:grid.map(r=>r.join('')), cannons:[...cannonSet], ships:[...shipSet], shipCenter }; }
 function applyMap(m){ grid=m.grid.map(s=>s.split('').map(Number)); cannonSet=new Set(m.cannons); shipSet=new Set(m.ships); shipCenter=m.shipCenter; }
@@ -872,7 +917,9 @@ function hostGame(){
   const code=makeCode(); netRole='host'; mySlot=0; slotByCid={}; room='bbnb/'+code;
   ws=new WebSocket(RELAY_URL);
   ws.onopen=()=>{ wsSend({k:'join',room}); document.getElementById('roomCode').textContent=code;
-    st.textContent='Share the code, then tap START.'; updateHostLobby(); };
+    st.textContent='Share the code, then tap START.'; updateHostLobby();
+    const adv=()=>{ if(state!=='playing') wsSend({k:'advertise', code, n:1+Object.keys(slotByCid).length}); };
+    adv(); if(advTimer) clearInterval(advTimer); advTimer=setInterval(adv, 2500); };
   ws.onerror=()=>{ st.textContent='Network error — go back and retry.'; };
   ws.onmessage=ev=>{
     let d; try{ d=JSON.parse(ev.data); }catch(e){ return; }
@@ -900,6 +947,7 @@ function hostStart(){
   const controls=['local','ai','ai','ai'], colors=[myColor];
   Object.keys(slotByCid).forEach(cid=>{ const s=slotByCid[cid]; if(s>=1&&s<=3){ controls[s]='remote'; colors[s]=colorByCid[cid]; } });
   reset(controls, colors); state='playing'; winnerSlot=-1; deadShown=false; hideOverlays();
+  wsSend({k:'unadvertise'}); if(advTimer){ clearInterval(advTimer); advTimer=null; } // room no longer joinable
   wsSend({k:'start', map:mapMsg()});
 }
 function hostBroadcast(){

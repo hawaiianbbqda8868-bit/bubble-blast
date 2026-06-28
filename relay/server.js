@@ -14,6 +14,7 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 
 const rooms = new Map(); // room -> Set<ws>
+const ads = new Map();   // ws -> {code, n, t}  (open rooms advertised by hosts)
 function leave(ws) {
   const r = rooms.get(ws.room);
   if (r) { r.delete(ws); if (!r.size) rooms.delete(ws.room); }
@@ -32,13 +33,21 @@ wss.on('connection', (ws) => {
       rooms.get(ws.room).add(ws);
       return;
     }
+    if (m.k === 'advertise') { ads.set(ws, { code: String(m.code || '').slice(0, 8), n: m.n || 1, t: Date.now() }); return; }
+    if (m.k === 'unadvertise') { ads.delete(ws); return; }
+    if (m.k === 'list') {
+      const now = Date.now(), list = [];
+      for (const a of ads.values()) if (now - a.t < 8000) list.push({ code: a.code, n: a.n });
+      try { ws.send(JSON.stringify({ k: 'rooms', rooms: list })); } catch {}
+      return;
+    }
     const peers = rooms.get(ws.room);
     if (!peers) return;
     const s = typeof data === 'string' ? data : data.toString();
     for (const p of peers) if (p !== ws && p.readyState === 1) p.send(s);
   });
-  ws.on('close', () => leave(ws));
-  ws.on('error', () => leave(ws));
+  ws.on('close', () => { ads.delete(ws); leave(ws); });
+  ws.on('error', () => { ads.delete(ws); leave(ws); });
 });
 
 // Drop dead connections so rooms don't leak.
