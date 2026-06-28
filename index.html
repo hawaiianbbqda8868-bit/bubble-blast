@@ -208,9 +208,9 @@ function reset(){
 }
 // difficulty per bot, blended with chosen level so "mixed" feels varied
 function botPlan(i){
-  const base = {easy:{move:0.27,trap:0.3,react:0.3,esc:0.2},
-                normal:{move:0.20,trap:0.55,react:0.55,esc:0.4},
-                hard:{move:0.15,trap:0.9,react:0.85,esc:0.6}}[diff];
+  const base = {easy:{move:0.27,trap:0.28,react:0.3,esc:0.18},
+                normal:{move:0.20,trap:0.5,react:0.55,esc:0.33},
+                hard:{move:0.15,trap:0.85,react:0.85,esc:0.5}}[diff];
   const spice=[{move:+0.05,trap:-0.15},{move:0,trap:0},{move:-0.03,trap:+0.1}][i];
   return { move:Math.max(0.1,base.move+spice.move),
            trap:Math.min(1,Math.max(0,base.trap+spice.trap)),
@@ -368,6 +368,25 @@ function adjacentBarrel(x,y){
   return [[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>{
     const bx=x+dx,by=y+dy; return inB(bx,by)&&grid[by][bx]===BARREL; });
 }
+// Can a bomb at (x,y) be escaped IN TIME? Must reach a tile outside its blast
+// (and outside current danger) within the fuse window — not just "a path exists".
+function canEscapeInTime(p,x,y,danger){
+  const cross=new Set(blastCells(x,y,p.range).map(c=>key(c.x,c.y)));
+  const md=p.isHuman?moveDur(p):botMoveDur(p);
+  const maxSteps=Math.max(2, Math.floor((FUSE-0.7)/md));
+  const q=[[x,y,0]], seen=new Set([key(x,y)]);
+  const dirs=[[0,-1],[0,1],[-1,0],[1,0]];
+  while(q.length){
+    const [cx,cy,d]=q.shift();
+    if(d>0 && !cross.has(key(cx,cy)) && !danger.has(key(cx,cy))) return true;
+    if(d>=maxSteps) continue;
+    for(const [dx,dy] of dirs){ const nx=cx+dx, ny=cy+dy, k=key(nx,ny);
+      if(seen.has(k)||!passable(nx,ny)||danger.has(k)) continue;
+      seen.add(k); q.push([nx,ny,d+1]);
+    }
+  }
+  return false;
+}
 function pickTarget(p,x,y,danger){
   const canEnter=(nx,ny)=>passable(nx,ny)&&!danger.has(key(nx,ny));
   // grab a nearby power-up
@@ -395,7 +414,7 @@ function botAct(p, danger){
 
   const me=players[0];
   const mt = me.alive ? tileOf(me) : null;
-  const canBomb = p.active<p.maxBubbles && escapeExists(p,x,y,danger);
+  const canBomb = p.active<p.maxBubbles && canEscapeInTime(p,x,y,danger);
 
   // 2) ATTACK: already lined up with the player within range -> bomb them
   if(mt && canBomb && (mt.x===x||mt.y===y)
