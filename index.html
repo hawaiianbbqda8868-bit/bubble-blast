@@ -94,9 +94,8 @@ const BARREL_FILL = 0.78;
 const FLOOR=0, WALL=1, BARREL=2;
 const PU_RANGE=0, PU_BUBBLE=1, PU_SPEED=2;
 
-const COLORS = {
-  player:'#ffd24d', bot:['#ff6b6b','#5fe08a','#7db4ff'],
-};
+const SKIN='#fde7cf', SKIN_LT='#fff8ee';   // characters are cream-bodied
+const CAPS = ['#e23b3b','#36b85c','#3f86e8']; // bot caps: red, green, blue
 
 // ====================== STATE ======================
 const cv = document.getElementById('cv');
@@ -104,6 +103,7 @@ const ctx = cv.getContext('2d');
 cv.width = COLS*TILE; cv.height = ROWS*TILE;
 
 let grid, players, bubbles, blasts, powerups, state='start', diff='normal';
+let cannonSet, shipSet, shipCenter;
 let burstCounter = 0, muted=false;
 let last = 0;
 
@@ -158,9 +158,18 @@ function blastCells(x,y,range){
 // ====================== MAP ======================
 function buildMap(){
   grid = Array.from({length:ROWS}, ()=>Array(COLS).fill(FLOOR));
-  for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
-    if(x===0||y===0||x===COLS-1||y===ROWS-1) grid[y][x]=WALL;       // border
-    else if(x%2===0 && y%2===0) grid[y][x]=WALL;                    // pillars
+  cannonSet = new Set(); shipSet = new Set();
+  // hull border
+  for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++)
+    if(x===0||y===0||x===COLS-1||y===ROWS-1) grid[y][x]=WALL;
+  // central pirate ship — 3x3 indestructible centrepiece
+  shipCenter = { x:(COLS-1)>>1, y:(ROWS-1)>>1 };
+  for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){
+    const x=shipCenter.x+dx, y=shipCenter.y+dy; grid[y][x]=WALL; shipSet.add(key(x,y));
+  }
+  // four rope-wrapped cannonballs — the only other hard blocks
+  for(const [x,y] of [[2,2],[COLS-3,2],[2,ROWS-3],[COLS-3,ROWS-3]]){
+    grid[y][x]=WALL; cannonSet.add(key(x,y));
   }
   // spawn safe zones (keep an L clear at each corner)
   const safe = new Set();
@@ -170,15 +179,16 @@ function buildMap(){
       const x=cx+dx, y=cy+dy; if(inB(x,y)) safe.add(key(x,y));
     });
   }
+  // everything else is a destructible crate -> the whole map can be cleared
   for(let y=1;y<ROWS-1;y++) for(let x=1;x<COLS-1;x++){
     if(grid[y][x]===FLOOR && !safe.has(key(x,y)) && Math.random()<BARREL_FILL)
       grid[y][x]=BARREL;
   }
 }
 
-function makePlayer(tx,ty,isHuman,botColor,botDiff){
-  return { tx,ty, fx:tx,fy:ty, tox:tx,toy:ty, t:0, moving:false, dir:null,
-    isHuman, color:isHuman?COLORS.player:botColor, alive:true,
+function makePlayer(tx,ty,isHuman,capColor,botDiff){
+  return { tx,ty, fx:tx,fy:ty, tox:tx,toy:ty, t:0, moving:false, dir:'down',
+    isHuman, color:SKIN, colorLight:SKIN_LT, capColor:capColor||'#1a1a1f', alive:true,
     range:1, maxBubbles:1, active:0, speed:0,
     trapped:false, trappedBy:null, trapTimer:0,
     botDiff, think:0, anim:0, target:null, targetTtl:0 };
@@ -189,10 +199,10 @@ function reset(){
   buildMap();
   bubbles=[]; blasts=[]; powerups=[]; burstCounter=0;
   players=[
-    makePlayer(1,1,true),
-    makePlayer(COLS-2,1,false,COLORS.bot[0],botPlan(0)),
-    makePlayer(1,ROWS-2,false,COLORS.bot[1],botPlan(1)),
-    makePlayer(COLS-2,ROWS-2,false,COLORS.bot[2],botPlan(2)),
+    makePlayer(1,1,true,'#1a1a1f'),
+    makePlayer(COLS-2,1,false,CAPS[0],botPlan(0)),
+    makePlayer(1,ROWS-2,false,CAPS[1],botPlan(1)),
+    makePlayer(COLS-2,ROWS-2,false,CAPS[2],botPlan(2)),
   ];
 }
 // difficulty per bot, blended with chosen level so "mixed" feels varied
@@ -529,30 +539,113 @@ function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
   ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
   ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
 
-function render(){
-  // floor (wood planks)
-  for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
-    const px=x*TILE, py=y*TILE, v=grid[y][x];
-    ctx.fillStyle = (x+y)%2 ? '#caa472' : '#bd9866'; // planks
-    ctx.fillRect(px,py,TILE,TILE);
-    ctx.fillStyle='rgba(120,80,40,.18)'; ctx.fillRect(px,py,TILE,2);
+// ---- pirate-cove tiles ----
+function drawCrate(px,py){
+  ctx.fillStyle='#e7b24e'; roundRect(px+2,py+2,TILE-4,TILE-4,5); ctx.fill();
+  ctx.fillStyle='#d29a3a'; roundRect(px+5,py+5,TILE-10,TILE-10,3); ctx.fill();
+  ctx.strokeStyle='#9c6a22'; ctx.lineWidth=2.5; ctx.strokeRect(px+4,py+4,TILE-8,TILE-8);
+  ctx.beginPath(); ctx.moveTo(px+5,py+5); ctx.lineTo(px+TILE-5,py+TILE-5);
+  ctx.moveTo(px+TILE-5,py+5); ctx.lineTo(px+5,py+TILE-5); ctx.stroke();
+  ctx.fillStyle='rgba(255,242,205,.30)'; roundRect(px+5,py+5,TILE-10,4,2); ctx.fill();
+}
+function drawHull(px,py){
+  ctx.fillStyle='#5d3a1b'; ctx.fillRect(px,py,TILE,TILE);
+  ctx.fillStyle='#6e4622'; roundRect(px+2,py+2,TILE-4,TILE-4,3); ctx.fill();
+  ctx.fillStyle='rgba(0,0,0,.22)'; ctx.fillRect(px,py+TILE-4,TILE,4);
+  ctx.fillStyle='rgba(255,210,150,.10)'; ctx.fillRect(px+3,py+3,TILE-6,3);
+}
+function drawDeck(px,py){
+  ctx.fillStyle='#7a4f26'; ctx.fillRect(px,py,TILE,TILE);
+  ctx.fillStyle='rgba(0,0,0,.14)'; ctx.fillRect(px,py+TILE-4,TILE,4);
+  ctx.fillStyle='rgba(255,225,175,.10)'; ctx.fillRect(px,py,TILE,3);
+}
+function drawCannonball(px,py){
+  ctx.fillStyle='#6b451f'; roundRect(px+7,py+TILE-12,TILE-14,8,3); ctx.fill(); // stand
+  const cx=px+TILE/2, cy=py+TILE/2-2, r=TILE*0.33;
+  ctx.fillStyle='#23232a'; ctx.beginPath(); ctx.arc(cx,cy,r,0,7); ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,.16)'; ctx.beginPath(); ctx.arc(cx-r*0.4,cy-r*0.4,r*0.28,0,7); ctx.fill();
+  ctx.strokeStyle='#efe7d2'; ctx.lineWidth=2.4;
+  ctx.beginPath(); ctx.arc(cx,cy,r*0.92,-0.6,0.8); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx,cy,r*0.6,-0.2,1.3); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx-r,cy); ctx.quadraticCurveTo(cx,cy+3,cx+r,cy-2); ctx.stroke();
+}
+function drawShip(){
+  if(!shipCenter) return;
+  const cx=shipCenter.x*TILE+TILE/2, top=(shipCenter.y-1)*TILE;
+  ctx.fillStyle='#5e3a1a'; ctx.fillRect(cx-4, top+4, 8, TILE*3-10);          // mast
+  ctx.fillStyle='#8a5a2c'; roundRect(cx-11, top+TILE*1.35, 22, 14, 3); ctx.fill(); // crow's nest
+  ctx.strokeStyle='#5e3c1a'; ctx.lineWidth=2; ctx.strokeRect(cx-11, top+TILE*1.35, 22, 14);
+  const fy=top+6;                                                            // jolly roger
+  ctx.fillStyle='#16161b';
+  ctx.beginPath(); ctx.moveTo(cx+4,fy); ctx.lineTo(cx+32,fy+5); ctx.lineTo(cx+32,fy+20); ctx.lineTo(cx+4,fy+25); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.font='14px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('☠', cx+19, fy+13);
+}
+
+// ---- characters ----
+function drawCap(p,cx,topY){
+  if(p.isHuman){ // pirate captain tricorn
+    ctx.fillStyle='#1c1c22';
+    ctx.beginPath(); ctx.moveTo(cx-17,topY+4);
+    ctx.quadraticCurveTo(cx,topY-15,cx+17,topY+4);
+    ctx.quadraticCurveTo(cx,topY+1,cx-17,topY+4); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle='#e8c24a'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(cx-15,topY+3); ctx.quadraticCurveTo(cx,topY-12,cx+15,topY+3); ctx.stroke();
+    ctx.fillStyle='#fff'; ctx.font='9px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('☠',cx,topY-3);
+  } else { // colored dome cap with white spots
+    ctx.fillStyle=p.capColor;
+    ctx.beginPath(); ctx.arc(cx,topY+4,13,Math.PI,2*Math.PI); ctx.fill();
+    ctx.fillRect(cx-13,topY+3,26,4);
+    ctx.fillStyle='rgba(255,255,255,.9)';
+    ctx.beginPath(); ctx.arc(cx-5,topY,2.1,0,7); ctx.arc(cx+5,topY+1,1.7,0,7); ctx.arc(cx+1,topY-3,1.5,0,7); ctx.fill();
   }
-  // walls + barrels
+}
+function drawCharacter(p,cx,cy){
+  const R=TILE*0.32, dir=p.dir||'down';
+  const wob=p.moving?Math.sin(p.anim*18)*1.3:0, by=cy+wob;
+  const step=p.moving?Math.sin(p.anim*18)*3:0;
+  ctx.fillStyle='rgba(0,0,0,.22)'; ctx.beginPath(); ctx.ellipse(cx,cy+R+6,R*0.95,4,0,0,7); ctx.fill();
+  ctx.fillStyle='#7a4a22';
+  ctx.beginPath(); ctx.ellipse(cx-6,cy+R+3+step,5,3.4,0,0,7); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(cx+6,cy+R+3-step,5,3.4,0,0,7); ctx.fill();
+  const g=ctx.createLinearGradient(cx,by-R,cx,by+R);
+  g.addColorStop(0,p.colorLight); g.addColorStop(1,p.color);
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,by,R,0,7); ctx.fill();
+  ctx.strokeStyle='rgba(90,55,25,.4)'; ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle='rgba(255,150,140,.45)';
+  ctx.beginPath(); ctx.arc(cx-R*0.6,by+3,2.6,0,7); ctx.arc(cx+R*0.6,by+3,2.6,0,7); ctx.fill();
+  const ex=dir==='left'?-2:dir==='right'?2:0, ey=dir==='up'?-2:dir==='down'?1:0;
+  ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.ellipse(cx-5,by-2,3.4,4.2,0,0,7); ctx.ellipse(cx+5,by-2,3.4,4.2,0,0,7); ctx.fill();
+  ctx.fillStyle='#1d1d22';
+  ctx.beginPath(); ctx.arc(cx-5+ex,by-2+ey,1.9,0,7); ctx.arc(cx+5+ex,by-2+ey,1.9,0,7); ctx.fill();
+  ctx.strokeStyle='#7a4a2a'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.arc(cx,by+4,3,0.15*Math.PI,0.85*Math.PI); ctx.stroke();
+  drawCap(p,cx,by-R+3);
+}
+
+function render(){
+  // floor (golden ship-deck planks)
+  for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
+    const px=x*TILE, py=y*TILE;
+    ctx.fillStyle = (x+y)%2 ? '#d7a44b' : '#cb9a40';
+    ctx.fillRect(px,py,TILE,TILE);
+    ctx.fillStyle='rgba(90,55,20,.16)'; ctx.fillRect(px,py+TILE-3,TILE,3);
+    ctx.fillStyle='rgba(255,230,180,.07)'; ctx.fillRect(px,py,TILE,2);
+  }
+  // hard blocks (hull / cannonballs / ship deck) + crates
   for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
     const px=x*TILE, py=y*TILE, v=grid[y][x];
     if(v===WALL){
-      ctx.fillStyle='#41566e'; roundRect(px+1,py+1,TILE-2,TILE-2,5); ctx.fill();
-      ctx.fillStyle='#5a738f';
-      roundRect(px+4,py+4,TILE-8,TILE-12,4); ctx.fill();
-      ctx.fillStyle='rgba(255,255,255,.12)'; roundRect(px+6,py+6,TILE-12,6,3); ctx.fill();
+      if(cannonSet.has(key(x,y))) drawCannonball(px,py);
+      else if(shipSet.has(key(x,y))) drawDeck(px,py);
+      else drawHull(px,py);
     } else if(v===BARREL){
-      ctx.fillStyle='#8a5a2c'; roundRect(px+4,py+3,TILE-8,TILE-6,6); ctx.fill();
-      ctx.strokeStyle='#5e3c1a'; ctx.lineWidth=3;
-      ctx.beginPath(); ctx.moveTo(px+5,py+TILE*0.4); ctx.lineTo(px+TILE-5,py+TILE*0.4); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(px+5,py+TILE*0.66); ctx.lineTo(px+TILE-5,py+TILE*0.66); ctx.stroke();
-      ctx.fillStyle='rgba(255,220,160,.25)'; roundRect(px+7,py+6,8,TILE-12,3); ctx.fill();
+      drawCrate(px,py);
     }
   }
+  drawShip();
   // power-ups
   for(const pu of powerups){
     const px=pu.x*TILE+TILE/2, py=pu.y*TILE+TILE/2;
@@ -582,21 +675,7 @@ function render(){
     let cx,cy;
     if(p.moving){ cx=(p.fx+(p.tox-p.fx)*p.t)*TILE+TILE/2; cy=(p.fy+(p.toy-p.fy)*p.t)*TILE+TILE/2; }
     else { cx=p.tx*TILE+TILE/2; cy=p.ty*TILE+TILE/2; }
-    const wob=p.moving?Math.sin(p.anim*20)*1.5:0;
-    // shadow
-    ctx.fillStyle='rgba(0,0,0,.22)'; ctx.beginPath(); ctx.ellipse(cx,cy+14,12,4,0,0,7); ctx.fill();
-    // body
-    ctx.fillStyle=p.color; ctx.beginPath(); ctx.arc(cx,cy+wob,TILE*0.34,0,7); ctx.fill();
-    ctx.strokeStyle='rgba(0,0,0,.25)'; ctx.lineWidth=2; ctx.stroke();
-    // eyes
-    ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(cx-5,cy-3+wob,4,0,7); ctx.arc(cx+5,cy-3+wob,4,0,7); ctx.fill();
-    ctx.fillStyle='#222';
-    const ex=p.dir==='left'?-1.5:p.dir==='right'?1.5:0;
-    ctx.beginPath(); ctx.arc(cx-5+ex,cy-3+wob,2,0,7); ctx.arc(cx+5+ex,cy-3+wob,2,0,7); ctx.fill();
-    // bandana for the human (pirate captain)
-    if(p.isHuman){
-      ctx.fillStyle='#d6402f'; roundRect(cx-12,cy-15+wob,24,7,3); ctx.fill();
-    }
+    drawCharacter(p,cx,cy);
     // trapped bubble overlay
     if(p.trapped){
       const fl=p.trapTimer<0.8 && Math.floor(performance.now()/100)%2===0;
