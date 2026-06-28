@@ -208,9 +208,9 @@ function reset(){
 }
 // difficulty per bot, blended with chosen level so "mixed" feels varied
 function botPlan(i){
-  const base = {easy:{move:0.27,trap:0.28,react:0.3,esc:0.18},
-                normal:{move:0.20,trap:0.5,react:0.55,esc:0.33},
-                hard:{move:0.15,trap:0.85,react:0.85,esc:0.5}}[diff];
+  const base = {easy:{move:0.27,trap:0.3,react:0.32,esc:0.12},
+                normal:{move:0.20,trap:0.55,react:0.6,esc:0.25},
+                hard:{move:0.15,trap:0.85,react:0.9,esc:0.4}}[diff];
   const spice=[{move:+0.05,trap:-0.15},{move:0,trap:0},{move:-0.03,trap:+0.1}][i];
   return { move:Math.max(0.1,base.move+spice.move),
            trap:Math.min(1,Math.max(0,base.trap+spice.trap)),
@@ -309,7 +309,7 @@ function burst(b){
       if(Math.random()<POWERUP_CHANCE)
         powerups.push({x:c.x,y:c.y,type:Math.floor(Math.random()*3)});
     }
-    blasts.push({x:c.x,y:c.y,timer:BLAST_TIME,id});
+    blasts.push({x:c.x,y:c.y,timer:BLAST_TIME,id,owner:b.owner});
     const chain=bubbleAt(c.x,c.y);
     if(chain && chain!==b && chain.fuse>0) chain.fuse=0; // chain reaction
   }
@@ -379,7 +379,8 @@ function adjacentBarrel(x,y){
 function canEscapeInTime(p,x,y,danger){
   const cross=new Set(blastCells(x,y,p.range).map(c=>key(c.x,c.y)));
   const md=p.isHuman?moveDur(p):botMoveDur(p);
-  const maxSteps=Math.max(2, Math.floor((FUSE-0.7)/md));
+  // require reaching safety with a comfortable margin (decision lag + a beat to spare)
+  const maxSteps=Math.max(2, Math.floor((FUSE-1.0)/md));
   const q=[[x,y,0]], seen=new Set([key(x,y)]);
   const dirs=[[0,-1],[0,1],[-1,0],[1,0]];
   while(q.length){
@@ -411,16 +412,25 @@ function digStep(sx,sy,tx,ty,danger){
 
 function botAct(p, danger){
   const here=tileOf(p), x=here.x, y=here.y;
+  p.urgent=false;
 
-  // 1) standing in danger -> run to the nearest safe tile (may run through the blast line)
+  // 1) standing in danger -> run (FAST) to the nearest safe tile.
   if(danger.has(key(x,y))){
-    p.target=null;
-    return { dir: bfsStep(x,y,(gx,gy)=>!danger.has(key(gx,gy)),(nx,ny)=>passable(nx,ny)), bubble:false };
+    p.target=null; p.urgent=true;
+    // only walk through our OWN blast (unavoidable); avoid running into other bombs' blasts
+    const ownCross=new Set();
+    for(const b of bubbles) if(b.owner===p) for(const c of blastCells(b.x,b.y,b.range)) ownCross.add(key(c.x,c.y));
+    let dir = bfsStep(x,y,(gx,gy)=>!danger.has(key(gx,gy)),
+                          (nx,ny)=>passable(nx,ny) && (!danger.has(key(nx,ny))||ownCross.has(key(nx,ny))));
+    // last resort: any passable route out
+    if(!dir) dir = bfsStep(x,y,(gx,gy)=>!danger.has(key(gx,gy)),(nx,ny)=>passable(nx,ny));
+    return { dir, bubble:false };
   }
 
   const me=players[0];
   const mt = me.alive ? tileOf(me) : null;
-  const canBomb = p.active<p.maxBubbles && canEscapeInTime(p,x,y,danger);
+  // bots only keep ONE live bomb at a time (multi-bomb juggling gets them killed)
+  const canBomb = p.active===0 && canEscapeInTime(p,x,y,danger);
 
   // 2) ATTACK: already lined up with the player within range -> bomb them
   if(mt && canBomb && (mt.x===x||mt.y===y)
@@ -522,7 +532,7 @@ function update(dt){
     }
     // advance movement
     if(p.moving){
-      p.t += dt/(p.isHuman?moveDur(p):botMoveDur(p));
+      p.t += dt/(p.isHuman?moveDur(p):(botMoveDur(p)*(p.urgent?0.55:1)));
       if(p.t>=1){
         p.t=0; p.moving=false; p.tx=p.tox; p.ty=p.toy;
         // pickup
@@ -544,7 +554,8 @@ function update(dt){
   for(const p of players){
     if(!p.alive) continue;
     const {x,y}=tileOf(p);
-    const hits=blasts.filter(bl=>bl.x===x&&bl.y===y);
+    // your OWN bubble never catches you — only rivals' blasts trap/pop you
+    const hits=blasts.filter(bl=>bl.x===x&&bl.y===y&&bl.owner!==p);
     if(!hits.length) continue;
     if(p.trapped){
       if(hits.some(h=>h.id!==p.trappedBy)){
