@@ -285,9 +285,14 @@ function startGame(){ netRole='off'; mySlot=0; reset(); state='playing'; deadSho
 function endGame(win){ state='over'; showResult(win); }
 
 // ====================== INPUT ======================
-const held=[]; let wantBubble=false;
-function pressDir(d){ if(!held.includes(d)) held.push(d); mashEscape(); }
+const held=[]; let wantBubble=false, bufferDir=null, bufferT=0;
+function pressDir(d){ if(!held.includes(d)) held.push(d); bufferDir=d; bufferT=performance.now(); mashEscape(); }
 function releaseDir(d){ const i=held.indexOf(d); if(i>=0) held.splice(i,1); }
+function effectiveDirArr(){ // held key(s), or a recent tap (so quick taps aren't dropped)
+  if(held.length) return held;
+  if(bufferDir!=null && performance.now()-bufferT<260) return [bufferDir];
+  return [];
+}
 function mashEscape(){ // wiggling while trapped builds your escape
   const me=players[0];
   if(me && me.trapped) me.struggle += 0.16;
@@ -328,7 +333,7 @@ bindBtn('bomb',()=>{ wantBubble=true; });
     else if(d==='down') setKnob(0,dist);
     else if(d==='up') setKnob(0,-dist);
     else setKnob(0,0);
-    if(d!==cur){ cur=d; held.length=0; if(d){ held.push(d); mashEscape(); } }
+    if(d!==cur){ cur=d; held.length=0; if(d){ held.push(d); bufferDir=d; bufferT=performance.now(); mashEscape(); } }
   }
   base.addEventListener('pointerdown',e=>{ active=true; base.setPointerCapture(e.pointerId); handle(e.clientX,e.clientY); e.preventDefault(); });
   base.addEventListener('pointermove',e=>{ if(active){ handle(e.clientX,e.clientY); e.preventDefault(); } });
@@ -926,7 +931,8 @@ function applySnapshot(d){
 }
 function netSendInput(){
   if(netRole!=='client' || !mqc || mySlot<=0) return;
-  const dir = held.length?held[held.length-1]:null;
+  const ed=effectiveDirArr();
+  const dir = ed.length?ed[ed.length-1]:null;
   const bomb = wantBubble; wantBubble=false;
   const now = performance.now();
   if(bomb || dir!==lastInDir || now-lastInT>120){    // ~throttle to changes + 8Hz heartbeat
@@ -942,9 +948,10 @@ function loop(ts){
     netSendInput();                       // clients only send input + render host's stream
   } else {                                // single-player or host: run the simulation
     if(state==='playing'){
-      if(players&&players[0]){ players[0].inHeld=held; if(wantBubble) players[0].inBomb=true; }
+      if(players&&players[0]){ players[0].inHeld=effectiveDirArr(); if(wantBubble) players[0].inBomb=true; }
       wantBubble=false;
       update(dt);
+      if(players&&players[0]&&players[0].moving) bufferDir=null; // buffered tap consumed once it moves
     }
     if(netRole==='host' && state!=='start'){ netTick=(netTick+1)%4; if(!netTick) hostBroadcast(); }
   }
