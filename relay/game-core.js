@@ -5,7 +5,7 @@
 'use strict';
 
 const COLS = 19, ROWS = 17;
-const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.125;
+const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 const POWERUP_CHANCE = 0.36, BARREL_FILL = 0.78;
 const FLOOR = 0, WALL = 1, BARREL = 2;
 const PU_RANGE = 0, PU_BUBBLE = 1, PU_SPEED = 2;
