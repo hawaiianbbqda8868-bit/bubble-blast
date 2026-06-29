@@ -25,6 +25,15 @@
     border-radius:50%; background:radial-gradient(circle at 40% 35%, #eaf6ff, #9fc3e6);
     box-shadow:0 3px 12px rgba(0,0,0,.45), inset 0 2px 5px rgba(255,255,255,.6);
     transition:transform .03s linear; }
+  /* optional arrow D-pad (alternative to the joystick) */
+  #dpad { left:24px; width:168px; height:168px; display:none; }
+  #dpad.show { display:block; }
+  #dpad .dbtn { position:absolute; width:56px; height:56px; border:none; border-radius:14px;
+    background:rgba(255,255,255,.14); color:#fff; font-size:24px; backdrop-filter:blur(4px);
+    box-shadow:0 2px 6px rgba(0,0,0,.4); }
+  #dpad .dbtn:active { background:rgba(255,255,255,.34); }
+  #dUp{left:56px;top:0}#dDown{left:56px;top:112px}#dLeft{left:0;top:56px}#dRight{left:112px;top:56px}
+
   #bombwrap { right:24px; }
   #bomb { width:108px; height:108px; border:none; border-radius:50%; font-size:46px;
     background:radial-gradient(circle at 40% 35%, #5fd0ff, #2a7fd6); color:#fff;
@@ -98,6 +107,12 @@
 <div id="ver"></div>
 
 <div class="pad" id="stick"><div id="knob"></div></div>
+<div class="pad" id="dpad">
+  <button class="dbtn" id="dUp" data-dir="up">▲</button>
+  <button class="dbtn" id="dLeft" data-dir="left">◀</button>
+  <button class="dbtn" id="dRight" data-dir="right">▶</button>
+  <button class="dbtn" id="dDown" data-dir="down">▼</button>
+</div>
 <div class="pad" id="bombwrap"><button id="bomb">🫧</button></div>
 
 <div class="overlay" id="startScreen">
@@ -107,6 +122,14 @@
   <div class="colorrow">
     <span class="colorlbl">Your color:</span>
     <div id="swatches"></div>
+  </div>
+
+  <div class="colorrow">
+    <span class="colorlbl">Controls:</span>
+    <div class="diffrow">
+      <div class="diff" data-ctrl="stick">🕹️ Joystick</div>
+      <div class="diff" data-ctrl="dpad">⬆️ Arrows</div>
+    </div>
   </div>
 
   <div class="modebtns" id="modeView">
@@ -166,7 +189,7 @@
 <script src="game-core.js"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v21';
+const APP_VERSION = 'v22';
 const COLS = 19, ROWS = 17, TILE = 40;
 const FUSE = 2.0;        // bubble fuse seconds
 const BLAST_TIME = 0.5;  // water lasts
@@ -319,6 +342,7 @@ function endGame(win){ state='over'; showResult(win); }
 
 // ====================== INPUT ======================
 const held=[]; let wantBubble=false, bufferDir=null, bufferT=0;
+let ctrlMode=(function(){ try{ return localStorage.getItem('bnbCtrl')||'stick'; }catch(e){ return 'stick'; } })();
 function pressDir(d){ if(!held.includes(d)) held.push(d); bufferDir=d; bufferT=performance.now(); mashEscape(); }
 function releaseDir(d){ const i=held.indexOf(d); if(i>=0) held.splice(i,1); }
 function effectiveDirArr(){ // held key(s), or a recent tap (so quick taps aren't dropped)
@@ -374,6 +398,21 @@ bindBtn('bomb',()=>{ wantBubble=true; });
   base.addEventListener('pointerup',end);
   base.addEventListener('pointercancel',end);
 })();
+
+// optional arrow D-pad
+document.querySelectorAll('#dpad .dbtn').forEach(b=>{
+  const dir=b.dataset.dir;
+  b.addEventListener('pointerdown',e=>{ e.preventDefault(); pressDir(dir); });
+  const up=()=>releaseDir(dir);
+  b.addEventListener('pointerup',up); b.addEventListener('pointerleave',up); b.addEventListener('pointercancel',up);
+});
+function applyCtrlMode(){
+  document.getElementById('stick').style.display = ctrlMode==='stick' ? '' : 'none';
+  document.getElementById('dpad').classList.toggle('show', ctrlMode==='dpad');
+  document.querySelectorAll('[data-ctrl]').forEach(x=>x.classList.toggle('sel', x.dataset.ctrl===ctrlMode));
+}
+document.querySelectorAll('[data-ctrl]').forEach(el=>el.onclick=()=>{ ctrlMode=el.dataset.ctrl; try{ localStorage.setItem('bnbCtrl',ctrlMode); }catch(e){} applyCtrlMode(); });
+applyCtrlMode();
 
 document.getElementById('playBtn').onclick=startGame;
 document.getElementById('againBtn').onclick=function(){
