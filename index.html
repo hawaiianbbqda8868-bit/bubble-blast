@@ -163,9 +163,10 @@
   <button class="smallbtn" id="overMenu">← Menu</button>
 </div>
 
+<script src="game-core.js"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v20';
+const APP_VERSION = 'v21';
 const COLS = 19, ROWS = 17, TILE = 40;
 const FUSE = 2.0;        // bubble fuse seconds
 const BLAST_TIME = 0.5;  // water lasts
@@ -181,7 +182,7 @@ const PU_RANGE=0, PU_BUBBLE=1, PU_SPEED=2;
 const SKIN='#fde7cf', SKIN_LT='#fff8ee';   // characters are cream-bodied
 const PALETTE = ['#ff5b5b','#ff9d3a','#ffe24d','#5fe08a','#46c8ff','#7c8cff','#c77dff','#ff7ad1'];
 let myColor = (function(){ try{ return localStorage.getItem('bnbColor')||PALETTE[0]; }catch(e){ return PALETTE[0]; } })();
-const SPAWNS=[[1,1],[COLS-2,1],[1,ROWS-2],[COLS-2,ROWS-2],[(COLS-1)>>1,1],[(COLS-1)>>1,ROWS-2],[1,(ROWS-1)>>1],[COLS-2,(ROWS-1)>>1]];
+const SPAWNS=BB.SPAWNS, MAPS=BB.MAPS, THEMES=BB.THEMES, MIDX=BB.MIDX, MIDY=BB.MIDY;
 
 // ====================== STATE ======================
 const cv = document.getElementById('cv');
@@ -189,7 +190,7 @@ const ctx = cv.getContext('2d');
 cv.width = COLS*TILE; cv.height = ROWS*TILE;
 
 let grid, players, bubbles, blasts, powerups, state='start', diff='normal';
-let cannonSet, shipSet, shipCenter;
+let decor=new Map(), theme='pirate', shipCenter=null;
 let burstCounter = 0, muted=false;
 let last = 0;
 // networking (server-authoritative; host & joiners are both thin clients)
@@ -243,34 +244,22 @@ function blastCells(x,y,range){
   return cells;
 }
 
-// ====================== MAP ======================
-function buildMap(){
+// ====================== MAP (one of several shared layouts) ======================
+function buildMap(mapId){
   grid = Array.from({length:ROWS}, ()=>Array(COLS).fill(FLOOR));
-  cannonSet = new Set(); shipSet = new Set();
-  // hull border
+  decor = new Map(); shipCenter = null;
   for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++)
-    if(x===0||y===0||x===COLS-1||y===ROWS-1) grid[y][x]=WALL;
-  // central pirate ship — 3x3 indestructible centrepiece
-  shipCenter = { x:(COLS-1)>>1, y:(ROWS-1)>>1 };
-  for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){
-    const x=shipCenter.x+dx, y=shipCenter.y+dy; grid[y][x]=WALL; shipSet.add(key(x,y));
-  }
-  // four rope-wrapped cannonballs — the only other hard blocks
-  for(const [x,y] of [[2,2],[COLS-3,2],[2,ROWS-3],[COLS-3,ROWS-3]]){
-    grid[y][x]=WALL; cannonSet.add(key(x,y));
-  }
-  // spawn safe zones (keep an L clear at each spawn)
+    if(x===0||y===0||x===COLS-1||y===ROWS-1){ grid[y][x]=WALL; decor.set(key(x,y),'hull'); }
+  const id = (mapId!=null) ? mapId : Math.floor(Math.random()*MAPS.length);
+  const M = MAPS[id]; theme = M.theme;
+  const set=(x,y,t)=>{ if(inB(x,y)){ grid[y][x]=WALL; decor.set(key(x,y),t); if(t==='ship') shipCenter={x:MIDX,y:MIDY}; } };
+  M.layout(set);
   const safe = new Set();
-  for(const [cx,cy] of SPAWNS){
-    [[0,0],[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{
-      const x=cx+dx, y=cy+dy; if(inB(x,y)&&grid[y][x]!==WALL) safe.add(key(x,y));
-    });
-  }
-  // everything else is a destructible crate -> the whole map can be cleared
-  for(let y=1;y<ROWS-1;y++) for(let x=1;x<COLS-1;x++){
-    if(grid[y][x]===FLOOR && !safe.has(key(x,y)) && Math.random()<BARREL_FILL)
-      grid[y][x]=BARREL;
-  }
+  for(const [cx,cy] of SPAWNS) [[0,0],[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{
+    const x=cx+dx, y=cy+dy; if(inB(x,y)&&grid[y][x]!==WALL) safe.add(key(x,y)); });
+  const fill = M.fill || BARREL_FILL;
+  for(let y=1;y<ROWS-1;y++) for(let x=1;x<COLS-1;x++)
+    if(grid[y][x]===FLOOR && !safe.has(key(x,y)) && Math.random()<fill) grid[y][x]=BARREL;
 }
 
 function makePlayer(tx,ty,isHuman,capColor,botDiff){
@@ -747,24 +736,50 @@ function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
   ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
 
 // ---- pirate-cove tiles ----
-function drawCrate(px,py){
-  ctx.fillStyle='#e7b24e'; roundRect(px+2,py+2,TILE-4,TILE-4,5); ctx.fill();
-  ctx.fillStyle='#d29a3a'; roundRect(px+5,py+5,TILE-10,TILE-10,3); ctx.fill();
-  ctx.strokeStyle='#9c6a22'; ctx.lineWidth=2.5; ctx.strokeRect(px+4,py+4,TILE-8,TILE-8);
+function TH(){ return THEMES[theme]||THEMES.pirate; }
+function drawCrate(px,py){ const T=TH();
+  ctx.fillStyle=T.crate; roundRect(px+2,py+2,TILE-4,TILE-4,5); ctx.fill();
+  ctx.fillStyle=T.crateIn; roundRect(px+5,py+5,TILE-10,TILE-10,3); ctx.fill();
+  ctx.strokeStyle=T.crateFrame; ctx.lineWidth=2.5; ctx.strokeRect(px+4,py+4,TILE-8,TILE-8);
   ctx.beginPath(); ctx.moveTo(px+5,py+5); ctx.lineTo(px+TILE-5,py+TILE-5);
   ctx.moveTo(px+TILE-5,py+5); ctx.lineTo(px+5,py+TILE-5); ctx.stroke();
-  ctx.fillStyle='rgba(255,242,205,.30)'; roundRect(px+5,py+5,TILE-10,4,2); ctx.fill();
+  ctx.fillStyle=T.crateSheen; roundRect(px+5,py+5,TILE-10,4,2); ctx.fill();
 }
-function drawHull(px,py){
-  ctx.fillStyle='#5d3a1b'; ctx.fillRect(px,py,TILE,TILE);
-  ctx.fillStyle='#6e4622'; roundRect(px+2,py+2,TILE-4,TILE-4,3); ctx.fill();
+function drawHull(px,py){ const T=TH();
+  ctx.fillStyle=T.hull; ctx.fillRect(px,py,TILE,TILE);
+  ctx.fillStyle=T.hull2; roundRect(px+2,py+2,TILE-4,TILE-4,3); ctx.fill();
   ctx.fillStyle='rgba(0,0,0,.22)'; ctx.fillRect(px,py+TILE-4,TILE,4);
-  ctx.fillStyle='rgba(255,210,150,.10)'; ctx.fillRect(px+3,py+3,TILE-6,3);
+  ctx.fillStyle='rgba(255,255,255,.08)'; ctx.fillRect(px+3,py+3,TILE-6,3);
+}
+function drawPillar(px,py){ const T=TH();
+  ctx.fillStyle=T.hull; roundRect(px+1,py+1,TILE-2,TILE-2,5); ctx.fill();
+  ctx.fillStyle=T.hull2; roundRect(px+4,py+4,TILE-8,TILE-12,4); ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,.14)'; roundRect(px+6,py+6,TILE-12,6,3); ctx.fill();
 }
 function drawDeck(px,py){
   ctx.fillStyle='#7a4f26'; ctx.fillRect(px,py,TILE,TILE);
   ctx.fillStyle='rgba(0,0,0,.14)'; ctx.fillRect(px,py+TILE-4,TILE,4);
   ctx.fillStyle='rgba(255,225,175,.10)'; ctx.fillRect(px,py,TILE,3);
+}
+function drawIce(px,py){
+  ctx.fillStyle='#cdeafb'; roundRect(px+1,py+1,TILE-2,TILE-2,5); ctx.fill();
+  ctx.fillStyle='#a9d8f0'; roundRect(px+4,py+4,TILE-8,TILE-8,3); ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(px+6,py+TILE-8); ctx.lineTo(px+TILE-8,py+6); ctx.stroke();
+  ctx.fillStyle='rgba(255,255,255,.6)'; roundRect(px+6,py+6,8,5,2); ctx.fill();
+}
+function drawLava(px,py){
+  ctx.fillStyle='#2c1c16'; ctx.fillRect(px,py,TILE,TILE);
+  const glow=0.6+0.4*Math.sin(performance.now()/300+px*0.3);
+  const g=ctx.createRadialGradient(px+TILE/2,py+TILE/2,2,px+TILE/2,py+TILE/2,TILE*0.55);
+  g.addColorStop(0,'rgba(255,150,40,'+glow+')'); g.addColorStop(0.6,'rgba(200,60,20,.8)'); g.addColorStop(1,'rgba(60,20,12,.92)');
+  ctx.fillStyle=g; roundRect(px+3,py+3,TILE-6,TILE-6,4); ctx.fill();
+  ctx.fillStyle='rgba(255,230,120,'+(0.5*glow)+')'; ctx.beginPath(); ctx.arc(px+TILE*0.4,py+TILE*0.45,3,0,7); ctx.fill();
+}
+function drawRock(px,py){
+  ctx.fillStyle='#4a3a32'; roundRect(px+1,py+1,TILE-2,TILE-2,6); ctx.fill();
+  ctx.fillStyle='#5e4a40'; roundRect(px+4,py+5,TILE-8,TILE-10,4); ctx.fill();
+  ctx.fillStyle='rgba(255,180,120,.10)'; roundRect(px+6,py+6,TILE-12,5,2); ctx.fill();
 }
 function drawCannonball(px,py){
   ctx.fillStyle='#6b451f'; roundRect(px+7,py+TILE-12,TILE-14,8,3); ctx.fill(); // stand
@@ -829,20 +844,26 @@ function drawCharacter(p,cx,cy){
 }
 
 function render(){
-  // floor (golden ship-deck planks)
+  const T=TH();
+  // floor planks (themed)
   for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
     const px=x*TILE, py=y*TILE;
-    ctx.fillStyle = (x+y)%2 ? '#d7a44b' : '#cb9a40';
+    ctx.fillStyle = (x+y)%2 ? T.f1 : T.f2;
     ctx.fillRect(px,py,TILE,TILE);
-    ctx.fillStyle='rgba(90,55,20,.16)'; ctx.fillRect(px,py+TILE-3,TILE,3);
-    ctx.fillStyle='rgba(255,230,180,.07)'; ctx.fillRect(px,py,TILE,2);
+    ctx.fillStyle='rgba(0,0,0,.10)'; ctx.fillRect(px,py+TILE-3,TILE,3);
+    ctx.fillStyle='rgba(255,255,255,.05)'; ctx.fillRect(px,py,TILE,2);
   }
-  // hard blocks (hull / cannonballs / ship deck) + crates
+  // indestructible blocks (by decor type) + crates
   for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
     const px=x*TILE, py=y*TILE, v=grid[y][x];
     if(v===WALL){
-      if(cannonSet.has(key(x,y))) drawCannonball(px,py);
-      else if(shipSet.has(key(x,y))) drawDeck(px,py);
+      const t=decor.get(key(x,y));
+      if(t==='cannon') drawCannonball(px,py);
+      else if(t==='ship') drawDeck(px,py);
+      else if(t==='pillar') drawPillar(px,py);
+      else if(t==='ice') drawIce(px,py);
+      else if(t==='lava') drawLava(px,py);
+      else if(t==='rock') drawRock(px,py);
       else drawHull(px,py);
     } else if(v===BARREL){
       drawCrate(px,py);
@@ -914,7 +935,7 @@ let browseWs=null, browseTimer=null, lastInDir='_', lastInT=0, botCount=3;
 function rid(){ return Math.random().toString(36).slice(2,9); }
 function wsSend(o){ if(ws && ws.readyState===1){ try{ ws.send(JSON.stringify(o)); }catch(e){} } }
 function leaveNet(){ try{ if(ws) ws.close(); }catch(e){} ws=null; netRole='off'; mySlot=0; }
-function applyMap(m){ grid=m.grid.map(s=>s.split('').map(Number)); cannonSet=new Set(m.cannons); shipSet=new Set(m.ships); shipCenter=m.shipCenter; }
+function applyMap(m){ grid=m.grid.map(s=>s.split('').map(Number)); decor=new Map(m.decor||[]); theme=m.theme||'pirate'; shipCenter=m.shipCenter||null; }
 
 function onServerMsg(ev){
   let d; try{ d=JSON.parse(ev.data); }catch(e){ return; }

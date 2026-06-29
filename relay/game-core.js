@@ -16,9 +16,40 @@ const DIRV = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
 const SPAWNS = [[1,1],[COLS-2,1],[1,ROWS-2],[COLS-2,ROWS-2],
                 [(COLS-1)>>1,1],[(COLS-1)>>1,ROWS-2],[1,(ROWS-1)>>1],[COLS-2,(ROWS-1)>>1]];
 const MAX_SLOTS = SPAWNS.length;
+const MIDX = (COLS-1)>>1, MIDY = (ROWS-1)>>1;
+// each map: a theme name + a layout(set) that places indestructible decor.
+// set(x,y,type,opts) marks a WALL tile of a given decor type; ship sets shipCenter.
+const MAPS = [
+  { name:'Pirate Cove', theme:'pirate', fill:0.78, layout(set){
+      for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++) set(MIDX+dx,MIDY+dy,'ship');
+      [[2,2],[COLS-3,2],[2,ROWS-3],[COLS-3,ROWS-3]].forEach(([x,y])=>set(x,y,'cannon'));
+    } },
+  { name:'Stone Maze', theme:'stone', fill:0.72, layout(set){
+      for(let y=2;y<ROWS-1;y+=2) for(let x=2;x<COLS-1;x+=2) set(x,y,'pillar');   // classic grid
+    } },
+  { name:'Frozen Bay', theme:'ice', fill:0.74, layout(set){
+      [[4,3],[COLS-6,3],[4,ROWS-5],[COLS-6,ROWS-5]].forEach(([cx,cy])=>{ for(let dy=0;dy<2;dy++) for(let dx=0;dx<2;dx++) set(cx+dx,cy+dy,'ice'); });
+      set(MIDX,MIDY,'ice');
+    } },
+  { name:'Volcano', theme:'lava', fill:0.76, layout(set){
+      for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++) set(MIDX+dx,MIDY+dy,'lava');
+      [[4,4],[COLS-6,4],[4,ROWS-6],[COLS-6,ROWS-6]].forEach(([cx,cy])=>{ for(let dy=0;dy<2;dy++) for(let dx=0;dx<2;dx++) set(cx+dx,cy+dy,'rock'); });
+    } },
+  { name:'Cross Reef', theme:'pirate', fill:0.74, layout(set){
+      for(let y=4;y<=ROWS-5;y++) if(y%2===0) set(MIDX,y,'cannon');
+      for(let x=4;x<=COLS-5;x++) if(x%2===0) set(x,MIDY,'cannon');
+    } },
+];
+// render colour palettes per theme (used by the browser; harmless on the server)
+const THEMES = {
+  pirate:{ f1:'#d7a44b', f2:'#cb9a40', crate:'#e7b24e', crateIn:'#d29a3a', crateFrame:'#9c6a22', crateSheen:'rgba(255,242,205,.30)', hull:'#5d3a1b', hull2:'#6e4622', bg:'#1d3a5f' },
+  stone:{  f1:'#9aa0ad', f2:'#8d93a1', crate:'#c3c9d6', crateIn:'#aab0bf', crateFrame:'#6b7280', crateSheen:'rgba(255,255,255,.28)', hull:'#454c5e', hull2:'#5a6275', bg:'#2a3550' },
+  ice:{    f1:'#bfe3f2', f2:'#aed7ea', crate:'#e2f3fc', crateIn:'#c2e4f5', crateFrame:'#7fb6d6', crateSheen:'rgba(255,255,255,.55)', hull:'#6fa8c8', hull2:'#8ec6e2', bg:'#274a63' },
+  lava:{   f1:'#5a4a42', f2:'#4f4039', crate:'#b5683a', crateIn:'#9c5530', crateFrame:'#6e3a22', crateSheen:'rgba(255,200,150,.25)', hull:'#3a2a24', hull2:'#4a352c', bg:'#3a221c' },
+};
 
 function makeWorld() {
-  let grid, players, bubbles, blasts, powerups, cannonSet, shipSet, shipCenter;
+  let grid, players, bubbles, blasts, powerups, decor, theme, shipCenter;
   let burstCounter = 0, gameState = 'lobby', winnerSlot = -1, diff = 'normal';
   let events = [];
 
@@ -40,20 +71,20 @@ function makeWorld() {
     return cells;
   }
 
-  function buildMap(){
+  function buildMap(mapId){
     grid = Array.from({length:ROWS}, ()=>Array(COLS).fill(FLOOR));
-    cannonSet = new Set(); shipSet = new Set();
+    decor = new Map(); shipCenter = null;
     for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++)
-      if(x===0||y===0||x===COLS-1||y===ROWS-1) grid[y][x]=WALL;
-    shipCenter = { x:(COLS-1)>>1, y:(ROWS-1)>>1 };
-    for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){
-      const x=shipCenter.x+dx, y=shipCenter.y+dy; grid[y][x]=WALL; shipSet.add(key(x,y));
-    }
-    for(const [x,y] of [[2,2],[COLS-3,2],[2,ROWS-3],[COLS-3,ROWS-3]]){ grid[y][x]=WALL; cannonSet.add(key(x,y)); }
+      if(x===0||y===0||x===COLS-1||y===ROWS-1){ grid[y][x]=WALL; decor.set(key(x,y),'hull'); }
+    const id = (mapId!=null) ? mapId : Math.floor(Math.random()*MAPS.length);
+    const M = MAPS[id]; theme = M.theme;
+    const set=(x,y,type)=>{ if(inB(x,y)){ grid[y][x]=WALL; decor.set(key(x,y),type); if(type==='ship') shipCenter={x:MIDX,y:MIDY}; } };
+    M.layout(set);
     const safe=new Set();
     for(const [cx,cy] of SPAWNS) [[0,0],[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{ const x=cx+dx,y=cy+dy; if(inB(x,y)&&grid[y][x]!==WALL) safe.add(key(x,y)); });
+    const fill = M.fill || BARREL_FILL;
     for(let y=1;y<ROWS-1;y++) for(let x=1;x<COLS-1;x++)
-      if(grid[y][x]===FLOOR && !safe.has(key(x,y)) && Math.random()<BARREL_FILL) grid[y][x]=BARREL;
+      if(grid[y][x]===FLOOR && !safe.has(key(x,y)) && Math.random()<fill) grid[y][x]=BARREL;
   }
 
   function makePlayer(tx,ty,isHuman,capColor,botDiff){
@@ -288,15 +319,15 @@ function makeWorld() {
       blasts: blasts.map(b=>({x:b.x,y:b.y,timer:b.timer})),
       powerups: powerups.map(p=>({x:p.x,y:p.y,type:p.type})) };
   }
-  function mapMsg(){ return { grid:grid.map(r=>r.join('')), cannons:[...cannonSet], ships:[...shipSet], shipCenter }; }
-  function read(){ return { grid, players, bubbles, blasts, powerups, cannonSet, shipSet, shipCenter, gameState, winnerSlot, events }; }
+  function mapMsg(){ return { grid:grid.map(r=>r.join('')), decor:[...decor], theme, shipCenter }; }
+  function read(){ return { grid, players, bubbles, blasts, powerups, decor, theme, shipCenter, gameState, winnerSlot, events }; }
 
   return { reset, update, setInput, snapshot, mapMsg, read,
     get gameState(){ return gameState; }, get winnerSlot(){ return winnerSlot; } };
 }
 
 const API = { makeWorld, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE,
-  FLOOR, WALL, BARREL, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS };
+  FLOOR, WALL, BARREL, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : null));
