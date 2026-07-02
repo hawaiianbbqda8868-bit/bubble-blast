@@ -25,14 +25,21 @@
     border-radius:50%; background:radial-gradient(circle at 40% 35%, #eaf6ff, #9fc3e6);
     box-shadow:0 3px 12px rgba(0,0,0,.45), inset 0 2px 5px rgba(255,255,255,.6);
     transition:transform .03s linear; }
-  /* optional arrow D-pad (alternative to the joystick) */
-  #dpad { left:24px; width:168px; height:168px; display:none; }
+  /* optional arrow D-pad: one connected cross — slide between arms for smooth 4-way movement */
+  #dpad { left:20px; width:300px; height:300px; display:none; }
   #dpad.show { display:block; }
-  #dpad .dbtn { position:absolute; width:56px; height:56px; border:none; border-radius:14px;
-    background:rgba(255,255,255,.14); color:#fff; font-size:24px; backdrop-filter:blur(4px);
-    box-shadow:0 2px 6px rgba(0,0,0,.4); }
-  #dpad .dbtn:active { background:rgba(255,255,255,.34); }
-  #dUp{left:56px;top:0}#dLeft{left:0;top:56px}#dDown{left:56px;top:56px}#dRight{left:112px;top:56px}
+  #dpad .bar { position:absolute; background:rgba(255,255,255,.13); border:2px solid rgba(255,255,255,.20);
+    backdrop-filter:blur(4px); box-shadow:0 3px 14px rgba(0,0,0,.45); }
+  #dpad .bv { left:100px; top:0; width:100px; height:300px; border-radius:26px; }   /* up↔down bar */
+  #dpad .bh { left:0; top:100px; width:300px; height:100px; border-radius:26px; }   /* left↔right bar */
+  #dpad .arm { position:absolute; width:100px; height:100px; display:flex; align-items:center; justify-content:center;
+    font-size:46px; color:#fff; pointer-events:none; text-shadow:0 2px 5px rgba(0,0,0,.55); }
+  #dpad .arm.up{left:100px;top:0}#dpad .arm.down{left:100px;top:200px}#dpad .arm.left{left:0;top:100px}#dpad .arm.right{left:200px;top:100px}
+  #dpad .arm.on{ background:rgba(255,255,255,.30); border-radius:20px; }
+  @media (max-width:560px){ #dpad{ width:222px; height:222px; }
+    #dpad .bv{left:74px;width:74px;height:222px} #dpad .bh{top:74px;width:222px;height:74px}
+    #dpad .arm{width:74px;height:74px;font-size:34px}
+    #dpad .arm.up{left:74px;top:0}#dpad .arm.down{left:74px;top:148px}#dpad .arm.left{left:0;top:74px}#dpad .arm.right{left:148px;top:74px} }
 
   #bombwrap { right:24px; }
   #bomb { width:108px; height:108px; border:none; border-radius:50%; font-size:46px;
@@ -108,10 +115,11 @@
 
 <div class="pad" id="stick"><div id="knob"></div></div>
 <div class="pad" id="dpad">
-  <button class="dbtn" id="dUp" data-dir="up">▲</button>
-  <button class="dbtn" id="dLeft" data-dir="left">◀</button>
-  <button class="dbtn" id="dRight" data-dir="right">▶</button>
-  <button class="dbtn" id="dDown" data-dir="down">▼</button>
+  <div class="bar bv"></div><div class="bar bh"></div>
+  <span class="arm up">▲</span>
+  <span class="arm down">▼</span>
+  <span class="arm left">◀</span>
+  <span class="arm right">▶</span>
 </div>
 <div class="pad" id="bombwrap"><button id="bomb">🫧</button></div>
 
@@ -189,7 +197,7 @@
 <script src="game-core.js"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v25';
+const APP_VERSION = 'v26';
 const COLS = 19, ROWS = 17, TILE = 40;
 const FUSE = 2.0;        // bubble fuse seconds
 const BLAST_TIME = 0.5;  // water lasts
@@ -402,13 +410,25 @@ bindBtn('bomb',()=>{ wantBubble=true; });
   base.addEventListener('pointercancel',end);
 })();
 
-// optional arrow D-pad
-document.querySelectorAll('#dpad .dbtn').forEach(b=>{
-  const dir=b.dataset.dir;
-  b.addEventListener('pointerdown',e=>{ e.preventDefault(); pressDir(dir); });
-  const up=()=>releaseDir(dir);
-  b.addEventListener('pointerup',up); b.addEventListener('pointerleave',up); b.addEventListener('pointercancel',up);
-});
+// Arrow D-pad: a single connected cross — press/slide across the arms for smooth 4-way movement.
+(function(){
+  const pad=document.getElementById('dpad');
+  const arms={ up:pad.querySelector('.arm.up'), down:pad.querySelector('.arm.down'),
+               left:pad.querySelector('.arm.left'), right:pad.querySelector('.arm.right') };
+  const DEAD=16; let active=false, cur=null;
+  const light=d=>{ for(const k in arms) arms[k].classList.toggle('on', k===d); };
+  function handle(cx,cy){
+    const r=pad.getBoundingClientRect();
+    const dx=cx-(r.left+r.width/2), dy=cy-(r.top+r.height/2);
+    let d=null;
+    if(Math.hypot(dx,dy)>DEAD) d = Math.abs(dx)>Math.abs(dy) ? (dx>0?'right':'left') : (dy>0?'down':'up');
+    if(d!==cur){ cur=d; held.length=0; light(d); if(d){ held.push(d); bufferDir=d; bufferT=performance.now(); mashEscape(); } }
+  }
+  pad.addEventListener('pointerdown',e=>{ active=true; pad.setPointerCapture(e.pointerId); handle(e.clientX,e.clientY); e.preventDefault(); });
+  pad.addEventListener('pointermove',e=>{ if(active){ handle(e.clientX,e.clientY); e.preventDefault(); } });
+  const end=()=>{ active=false; cur=null; held.length=0; light(null); };
+  pad.addEventListener('pointerup',end); pad.addEventListener('pointercancel',end);
+})();
 function applyCtrlMode(){
   document.getElementById('stick').style.display = ctrlMode==='stick' ? '' : 'none';
   document.getElementById('dpad').classList.toggle('show', ctrlMode==='dpad');
