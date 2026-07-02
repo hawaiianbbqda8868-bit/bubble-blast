@@ -26,16 +26,16 @@
     box-shadow:0 3px 12px rgba(0,0,0,.45), inset 0 2px 5px rgba(255,255,255,.6);
     transition:transform .03s linear; }
   /* optional arrow D-pad: one connected cross — slide between arms for smooth 4-way movement */
-  #dpad { left:24px; width:150px; height:150px; display:none; }
+  #dpad { left:24px; width:186px; height:186px; display:none; }
   #dpad.show { display:block; }
   #dpad .bar { position:absolute; background:rgba(255,255,255,.13); border:2px solid rgba(255,255,255,.20);
-    backdrop-filter:blur(4px); box-shadow:0 3px 12px rgba(0,0,0,.42); }
-  #dpad .bv { left:50px; top:0; width:50px; height:150px; border-radius:15px; }   /* up↔down bar */
-  #dpad .bh { left:0; top:50px; width:150px; height:50px; border-radius:15px; }   /* left↔right bar */
-  #dpad .arm { position:absolute; width:50px; height:50px; display:flex; align-items:center; justify-content:center;
-    font-size:24px; color:#fff; pointer-events:none; text-shadow:0 2px 4px rgba(0,0,0,.5); }
-  #dpad .arm.up{left:50px;top:0}#dpad .arm.down{left:50px;top:100px}#dpad .arm.left{left:0;top:50px}#dpad .arm.right{left:100px;top:50px}
-  #dpad .arm.on{ background:rgba(255,255,255,.30); border-radius:11px; }
+    backdrop-filter:blur(4px); box-shadow:0 3px 13px rgba(0,0,0,.43); }
+  #dpad .bv { left:62px; top:0; width:62px; height:186px; border-radius:18px; }   /* up↔down bar */
+  #dpad .bh { left:0; top:62px; width:186px; height:62px; border-radius:18px; }   /* left↔right bar */
+  #dpad .arm { position:absolute; width:62px; height:62px; display:flex; align-items:center; justify-content:center;
+    font-size:30px; color:#fff; pointer-events:none; text-shadow:0 2px 4px rgba(0,0,0,.5); }
+  #dpad .arm.up{left:62px;top:0}#dpad .arm.down{left:62px;top:124px}#dpad .arm.left{left:0;top:62px}#dpad .arm.right{left:124px;top:62px}
+  #dpad .arm.on{ background:rgba(255,255,255,.30); border-radius:14px; }
 
   #bombwrap { right:24px; }
   #bomb { width:108px; height:108px; border:none; border-radius:50%; font-size:46px;
@@ -193,7 +193,7 @@
 <script src="game-core.js"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v28';
+const APP_VERSION = 'v29';
 const COLS = 19, ROWS = 17, TILE = 40;
 const FUSE = 2.0;        // bubble fuse seconds
 const BLAST_TIME = 0.5;  // water lasts
