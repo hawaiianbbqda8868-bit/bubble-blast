@@ -26,20 +26,16 @@
     box-shadow:0 3px 12px rgba(0,0,0,.45), inset 0 2px 5px rgba(255,255,255,.6);
     transition:transform .03s linear; }
   /* optional arrow D-pad: one connected cross — slide between arms for smooth 4-way movement */
-  #dpad { left:20px; width:300px; height:300px; display:none; }
+  #dpad { left:24px; width:150px; height:150px; display:none; }
   #dpad.show { display:block; }
   #dpad .bar { position:absolute; background:rgba(255,255,255,.13); border:2px solid rgba(255,255,255,.20);
-    backdrop-filter:blur(4px); box-shadow:0 3px 14px rgba(0,0,0,.45); }
-  #dpad .bv { left:100px; top:0; width:100px; height:300px; border-radius:26px; }   /* up↔down bar */
-  #dpad .bh { left:0; top:100px; width:300px; height:100px; border-radius:26px; }   /* left↔right bar */
-  #dpad .arm { position:absolute; width:100px; height:100px; display:flex; align-items:center; justify-content:center;
-    font-size:46px; color:#fff; pointer-events:none; text-shadow:0 2px 5px rgba(0,0,0,.55); }
-  #dpad .arm.up{left:100px;top:0}#dpad .arm.down{left:100px;top:200px}#dpad .arm.left{left:0;top:100px}#dpad .arm.right{left:200px;top:100px}
-  #dpad .arm.on{ background:rgba(255,255,255,.30); border-radius:20px; }
-  @media (max-width:560px){ #dpad{ width:222px; height:222px; }
-    #dpad .bv{left:74px;width:74px;height:222px} #dpad .bh{top:74px;width:222px;height:74px}
-    #dpad .arm{width:74px;height:74px;font-size:34px}
-    #dpad .arm.up{left:74px;top:0}#dpad .arm.down{left:74px;top:148px}#dpad .arm.left{left:0;top:74px}#dpad .arm.right{left:148px;top:74px} }
+    backdrop-filter:blur(4px); box-shadow:0 3px 12px rgba(0,0,0,.42); }
+  #dpad .bv { left:50px; top:0; width:50px; height:150px; border-radius:15px; }   /* up↔down bar */
+  #dpad .bh { left:0; top:50px; width:150px; height:50px; border-radius:15px; }   /* left↔right bar */
+  #dpad .arm { position:absolute; width:50px; height:50px; display:flex; align-items:center; justify-content:center;
+    font-size:24px; color:#fff; pointer-events:none; text-shadow:0 2px 4px rgba(0,0,0,.5); }
+  #dpad .arm.up{left:50px;top:0}#dpad .arm.down{left:50px;top:100px}#dpad .arm.left{left:0;top:50px}#dpad .arm.right{left:100px;top:50px}
+  #dpad .arm.on{ background:rgba(255,255,255,.30); border-radius:11px; }
 
   #bombwrap { right:24px; }
   #bomb { width:108px; height:108px; border:none; border-radius:50%; font-size:46px;
@@ -197,7 +193,7 @@
 <script src="game-core.js"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v27';
+const APP_VERSION = 'v28';
 const COLS = 19, ROWS = 17, TILE = 40;
 const FUSE = 2.0;        // bubble fuse seconds
 const BLAST_TIME = 0.5;  // water lasts
@@ -415,7 +411,7 @@ bindBtn('bomb',()=>{ wantBubble=true; });
   const pad=document.getElementById('dpad');
   const arms={ up:pad.querySelector('.arm.up'), down:pad.querySelector('.arm.down'),
                left:pad.querySelector('.arm.left'), right:pad.querySelector('.arm.right') };
-  const DEAD=16; let active=false, cur=null;
+  const DEAD=10; let active=false, cur=null;
   const light=d=>{ for(const k in arms) arms[k].classList.toggle('on', k===d); };
   function handle(cx,cy){
     const r=pad.getBoundingClientRect();
