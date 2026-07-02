@@ -1,7 +1,7 @@
 // Network-first for the app shell so players always get the latest client
 // when online (prevents online version drift between devices); cache is just
 // the offline fallback for single-player.
-const CACHE = 'bnb-v26';
+const CACHE = 'bnb-v27';
 const ASSETS = ['./', './index.html', './game-core.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', e => {
@@ -18,9 +18,12 @@ self.addEventListener('fetch', e => {
   const url = new URL(req.url);
   const isShell = req.mode === 'navigate' || url.pathname.endsWith('/') || url.pathname.endsWith('/index.html');
   if (isShell) {
-    // always try the network first; fall back to cache when offline
+    // Network-first, bypassing the browser HTTP cache (GitHub Pages sends
+    // max-age=600, which would otherwise serve a stale index.html for 10 min
+    // and cause version drift). Fall back to the SW cache when offline.
+    const fresh = new Request(url.origin + url.pathname, { cache: 'reload' });
     e.respondWith(
-      fetch(req).then(r => { const c = r.clone(); caches.open(CACHE).then(ca => ca.put('./index.html', c)); return r; })
+      fetch(fresh).then(r => { const c = r.clone(); caches.open(CACHE).then(ca => ca.put('./index.html', c)); return r; })
         .catch(() => caches.match(req).then(r => r || caches.match('./index.html')))
     );
   } else {
