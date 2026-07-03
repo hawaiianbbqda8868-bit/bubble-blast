@@ -150,6 +150,8 @@
     </div>
     <div class="status">Bots:</div>
     <div class="stepper"><button class="stepbtn" data-bot="-">−</button><span class="botnum">3</span><button class="stepbtn" data-bot="+">+</button></div>
+    <div class="status">Teams — pop a teammate's bubble to <b>free</b> them, an enemy's to <b>knock them out</b>:</div>
+    <div class="diffrow"><div class="diff teamtoggle">🤝 Teams: Off</div></div>
     <button class="play" id="playBtn">PLAY ▶</button>
     <button class="smallbtn" data-back>← back</button>
   </div>
@@ -166,6 +168,8 @@
       <div class="diff sel" data-d="normal">Normal</div>
       <div class="diff" data-d="hard">Hard</div>
     </div>
+    <div class="status">Teams (auto-split into 2):</div>
+    <div class="diffrow"><div class="diff teamtoggle">🤝 Teams: Off</div></div>
     <button class="play" id="hostStart">START ▶</button>
     <div class="status" id="hostStatus"></div>
     <button class="smallbtn" data-back>← back</button>
@@ -193,7 +197,7 @@
 <script src="game-core.js"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v29';
+const APP_VERSION = 'v30';
 const COLS = 19, ROWS = 17, TILE = 40;
 const FUSE = 2.0;        // bubble fuse seconds
 const BLAST_TIME = 0.5;  // water lasts
@@ -210,6 +214,12 @@ const SKIN='#fde7cf', SKIN_LT='#fff8ee';   // characters are cream-bodied
 const PALETTE = ['#ff5b5b','#ff9d3a','#ffe24d','#5fe08a','#46c8ff','#7c8cff','#c77dff','#ff7ad1'];
 let myColor = (function(){ try{ return localStorage.getItem('bnbColor')||PALETTE[0]; }catch(e){ return PALETTE[0]; } })();
 const SPAWNS=BB.SPAWNS, MAPS=BB.MAPS, THEMES=BB.THEMES, MIDX=BB.MIDX, MIDY=BB.MIDY;
+let menuTeams = (function(){ try{ return localStorage.getItem('bnbTeams')==='1'; }catch(e){ return false; } })();
+let teamMode = false;                        // active in the current match (set at start / from server)
+const TEAM_COLORS = ['#ff5b5b','#46c8ff'];   // Team A (red) / Team B (blue) aura rings
+function areAllies(a,b){ return teamMode && a && b && a.team!=null && a.team===b.team; }
+function autoTeams(controls){ const t=new Array(8).fill(null); let k=0;
+  for(let i=0;i<controls.length;i++){ if(controls[i] && controls[i]!=='none'){ t[i]=k%2; k++; } } return t; }
 
 // ====================== STATE ======================
 const cv = document.getElementById('cv');
@@ -245,6 +255,7 @@ const sfx = {
   power:()=>{beep(660,0.07,'square',0.06); setTimeout(()=>beep(990,0.09,'square',0.06),70);},
   trap:()=>beep(300,0.15,'sine',0.06),
   pop:()=>{beep(420,0.1,'square',0.07); setTimeout(()=>beep(180,0.16,'sawtooth',0.06),60);},
+  free:()=>{beep(700,0.08,'sine',0.06); setTimeout(()=>beep(1050,0.12,'sine',0.06),70);},
   win:()=>[523,659,784,1046].forEach((f,i)=>setTimeout(()=>beep(f,0.18,'square',0.06),i*140)),
   lose:()=>[392,330,262].forEach((f,i)=>setTimeout(()=>beep(f,0.22,'sawtooth',0.06),i*160)),
 };
@@ -301,9 +312,10 @@ function makePlayer(tx,ty,isHuman,capColor,botDiff){
 }
 
 // ====================== RESET / START ======================
-function reset(controls, colors){
+function reset(controls, colors, teams){
   controls = controls || ['local','ai','ai','ai'];
   colors = colors || [];
+  teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
   buildMap();
   bubbles=[]; blasts=[]; powerups=[]; burstCounter=0;
   const used=new Set(colors.filter(Boolean));
@@ -315,6 +327,7 @@ function reset(controls, colors){
     let cap=colors[i] || botPool[bp++ % botPool.length] || PALETTE[i%PALETTE.length];
     const p=makePlayer(s[0],s[1], !aiLike, cap, aiLike?botPlan(bi++%3):null);
     p.control=ctrl; p.slot=i; p.captain=false; p.inHeld=[]; p.inBomb=false; p._lastHeld=null;
+    p.team = teamMode ? (teams[i]==null?null:teams[i]) : null;
     if(ctrl==='none') p.alive=false;
     return p;
   });
@@ -344,7 +357,8 @@ function showResult(win){
 function startGame(){ netRole='off'; mySlot=0;
   const n=Math.max(1,Math.min(7,botCount));            // single-player needs at least 1 bot
   const controls=['local']; for(let i=0;i<n;i++) controls.push('ai'); while(controls.length<8) controls.push('none');
-  reset(controls, [myColor]); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
+  const teams = menuTeams ? autoTeams(controls) : null;
+  reset(controls, [myColor], teams); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
 function endGame(win){ state='over'; showResult(win); }
 
 // ====================== INPUT ======================
@@ -446,6 +460,9 @@ document.querySelectorAll('.diff[data-d]').forEach(el=>el.onclick=()=>{
 function syncBots(){ document.querySelectorAll('.botnum').forEach(e=>e.textContent=botCount); }
 function setBots(n){ botCount=Math.max(0,Math.min(7,n)); syncBots(); if(netRole==='host') wsSend({k:'setbots', bots:botCount}); }
 document.querySelectorAll('[data-bot]').forEach(b=>b.onclick=()=>setBots(botCount+(b.dataset.bot==='+'?1:-1)));
+function syncTeamToggle(){ document.querySelectorAll('.teamtoggle').forEach(e=>{ e.textContent = menuTeams?'🤝 Teams: On':'🤝 Teams: Off'; e.classList.toggle('sel', menuTeams); }); }
+document.querySelectorAll('.teamtoggle').forEach(e=>e.onclick=()=>{ menuTeams=!menuTeams; try{ localStorage.setItem('bnbTeams', menuTeams?'1':'0'); }catch(_){}; syncTeamToggle(); });
+syncTeamToggle();
 document.getElementById('mute').onclick=function(){ muted=!muted; this.textContent=muted?'🔇':'🔊'; };
 
 // ---- start-screen mode switching ----
@@ -635,8 +652,14 @@ function botAct(p, danger){
     return { dir, bubble:false };
   }
 
-  const me=players[0];
-  const mt = me.alive ? tileOf(me) : null;
+  // opportunistic: step onto an adjacent trapped sailor to pop it (kill enemy / free teammate) when safe
+  for(const dir in DIRV){ const [dx,dy]=DIRV[dir]; const nx=x+dx, ny=y+dy;
+    const v=players.find(q=>q!==p&&q.alive&&q.trapped&&q.tx===nx&&q.ty===ny);
+    if(v && passable(nx,ny) && !danger.has(key(nx,ny))){ p.target=null; return { dir, bubble:false }; } }
+
+  let me=players[0];
+  if(teamMode){ let bd=1e9, best=null; for(const q of players){ if(q===p||!q.alive||areAllies(p,q)) continue; const t=tileOf(q); const d=Math.abs(t.x-x)+Math.abs(t.y-y); if(d<bd){bd=d;best=q;} } me=best||players[0]; }
+  const mt = me && me.alive ? tileOf(me) : null;
   // bots only keep ONE live bomb at a time (multi-bomb juggling gets them killed)
   const canBomb = p.active===0 && canEscapeInTime(p,x,y,danger);
 
@@ -764,8 +787,10 @@ function update(dt){
     const hits=blasts.filter(bl=>bl.x===x&&bl.y===y&&(p.isHuman||bl.owner!==p));
     if(!hits.length) continue;
     if(p.trapped){
-      if(hits.some(h=>h.id!==p.trappedBy)){
-        p.alive=false; if(p.isHuman) sfx.pop(); else sfx.pop();
+      const popper=hits.find(h=>h.id!==p.trappedBy);
+      if(popper){
+        if(popper.owner && areAllies(popper.owner,p)){ p.trapped=false; p.trappedBy=null; p.struggle=0; sfx.free(); }
+        else { p.alive=false; sfx.pop(); }
       }
     } else {
       p.trapped=true; p.trappedBy=hits[0].id; p.trapTimer=TRAP_TIME; p.struggle=0;
@@ -776,12 +801,31 @@ function update(dt){
     }
   }
 
+  // contact pop: a sailor standing on a trapped sailor pops the bubble (enemy=out, teammate=freed)
+  for(const pt of players){
+    if(!pt.alive || !pt.trapped) continue;
+    for(const q of players){
+      if(q===pt || !q.alive || q.trapped) continue;
+      const tq=tileOf(q);
+      if(tq.x===pt.tx && tq.y===pt.ty){
+        if(areAllies(q,pt)){ pt.trapped=false; pt.trappedBy=null; pt.struggle=0; sfx.free(); }
+        else { pt.alive=false; sfx.pop(); }
+        break;
+      }
+    }
+  }
+
   // win/lose
   const alive=players.filter(p=>p.alive);
   if(netRole==='off'){
-    if(!players[0].alive) endGame(false);
-    else if(alive.length<=1) endGame(true);
-  } else { // host: match runs until one sailor remains; each device shows its own result
+    if(teamMode){
+      const teamsAlive=new Set(alive.map(p=>p.team));
+      if(teamsAlive.size<=1 && state==='playing'){ const myTeam=players[0].team; endGame(alive.some(p=>p.team===myTeam)); }
+    } else {
+      if(!players[0].alive) endGame(false);
+      else if(alive.length<=1) endGame(true);
+    }
+  } else { // host: match runs until one sailor/team remains; each device shows its own result
     if(!deadShown && !players[mySlot].alive){ deadShown=true; showResult(false); }
     if(alive.length<=1){ state='over'; winnerSlot = alive.length?alive[0].slot:-1;
       if(!deadShown){ deadShown=true; showResult(winnerSlot===mySlot); } }
@@ -876,6 +920,9 @@ function drawCharacter(p,cx,cy){
   const wob=p.moving?Math.sin(p.anim*18)*1.3:0, by=cy+wob;
   const step=p.moving?Math.sin(p.anim*18)*3:0;
   ctx.fillStyle='rgba(0,0,0,.22)'; ctx.beginPath(); ctx.ellipse(cx,cy+R+6,R*0.95,4,0,0,7); ctx.fill();
+  if(teamMode && p.team!=null){ ctx.save(); ctx.strokeStyle=TEAM_COLORS[p.team]||'#fff'; ctx.lineWidth=3;
+    ctx.shadowColor=TEAM_COLORS[p.team]||'#fff'; ctx.shadowBlur=8;
+    ctx.beginPath(); ctx.arc(cx,by,R+4,0,7); ctx.stroke(); ctx.restore(); }
   ctx.fillStyle='#7a4a22';
   ctx.beginPath(); ctx.ellipse(cx-6,cy+R+3+step,5,3.4,0,0,7); ctx.fill();
   ctx.beginPath(); ctx.ellipse(cx+6,cy+R+3-step,5,3.4,0,0,7); ctx.fill();
@@ -1039,7 +1086,7 @@ function onServerMsg(ev){
     const el=document.getElementById('hostLobby'); if(el) el.textContent='Humans: '+d.n+' / '+d.cap+'   ·   Bots: '+d.bots;
     if(netRole==='client' && state!=='playing'){ const js=document.getElementById('joinStatus'); if(js) js.textContent='In the lobby — '+d.n+' human(s) + '+d.bots+' bots. Waiting for host…'; } }
   else if(d.k==='joinfail'){ document.getElementById('joinStatus').textContent=d.reason||'Could not join.'; netRole='off'; }
-  else if(d.k==='start'){ applyMap(d); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
+  else if(d.k==='start'){ applyMap(d); teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
   else if(d.k==='state'){ applySnapshot(d); }
   else if(d.k==='closed'){ if(netRole!=='off' && state!=='start'){ toMenu(); document.getElementById('joinStatus').textContent='Host left — room closed.'; } }
 }
@@ -1051,7 +1098,7 @@ function hostGame(){
   netRole='host'; mySlot=0; syncBots();
   connectServer(()=>wsSend({k:'create', cid:rid(), color:myColor, bots:botCount}));
 }
-function hostStart(){ wsSend({k:'start', diff, bots:botCount}); }
+function hostStart(){ wsSend({k:'start', diff, bots:botCount, teams:menuTeams}); }
 
 // ---- CLIENT (joiner) ----
 function joinGame(){
@@ -1077,12 +1124,12 @@ function clientAdvance(dt){
 function applySnapshot(d){
   grid=d.grid.map(s=>s.split('').map(Number));
   players=d.players; bubbles=d.bubbles; blasts=d.blasts; powerups=d.powerups;
-  state=d.gs; winnerSlot=d.win;
+  state=d.gs; winnerSlot=d.win; teamMode=!!d.tm;
   if(state==='playing') hideOverlays();
   if(d.ev) for(const e of d.ev){ const f=sfx[e]; if(f) f(); }   // game sounds from the server
   const me=players[mySlot];
-  if(d.gs==='over'){ if(!deadShown){ deadShown=true; showResult(winnerSlot===mySlot); } }
-  else if(me && !me.alive && !deadShown){ deadShown=true; showResult(false); }
+  if(d.gs==='over'){ if(!deadShown){ deadShown=true; showResult(teamMode ? (me && me.team===d.wt) : (winnerSlot===mySlot)); } }
+  else if(!teamMode && me && !me.alive && !deadShown){ deadShown=true; showResult(false); }
 }
 function netSendInput(){
   if(!ws || ws.readyState!==1 || mySlot<0) return;   // host is slot 0 — also a client

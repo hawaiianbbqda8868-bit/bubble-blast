@@ -26,14 +26,17 @@ function buildControls(room){
   for(const c of room.conns){ if(c.slot>=0 && c.slot<N_SLOTS){ controls[c.slot]='remote'; colors[c.slot]=c.color; } } // humans
   let need = room.bots || 0;
   for(let s=0;s<N_SLOTS && need>0;s++){ if(controls[s]==='none'){ controls[s]='ai'; need--; } }              // bots into empty seats
-  return { controls, colors };
+  let teams = null;
+  if(room.teamMode){ teams = new Array(N_SLOTS).fill(null); let k=0;
+    for(let s=0;s<N_SLOTS;s++){ if(controls[s]!=='none'){ teams[s]=k%2; k++; } } }                          // auto-split into 2 teams
+  return { controls, colors, teams };
 }
 function beginGame(room){
-  const { controls, colors } = buildControls(room);
+  const { controls, colors, teams } = buildControls(room);
   room.world = BB.makeWorld();
-  room.world.reset(controls, colors, room.diff||'normal');
+  room.world.reset(controls, colors, room.diff||'normal', teams);
   room.state = 'playing';
-  broadcast(room, Object.assign({ k:'start' }, room.world.mapMsg()));
+  broadcast(room, Object.assign({ k:'start', tm:!!room.teamMode }, room.world.mapMsg()));
   startTick(room);
 }
 function startTick(room){
@@ -60,7 +63,7 @@ wss.on('connection', (ws) => {
     }
     if (m.k === 'create') {
       let code; do { code = makeCode(); } while (rooms.has(code));
-      const room = { code, conns:[], state:'lobby', world:null, tick:null, diff:'normal', bots:Math.min(7,Math.max(0, m.bots==null?3:m.bots)) };
+      const room = { code, conns:[], state:'lobby', world:null, tick:null, diff:'normal', teamMode:!!m.teams, bots:Math.min(7,Math.max(0, m.bots==null?3:m.bots)) };
       rooms.set(code, room);
       ws.cid = m.cid; ws.roomCode = code; ws.slot = 0; ws.color = m.color || BB.PALETTE[0];
       room.conns.push({ ws, cid:ws.cid, slot:0, color:ws.color });
@@ -86,7 +89,7 @@ wss.on('connection', (ws) => {
     const room = rooms.get(ws.roomCode);
     if (!room) return;
     if (m.k === 'setbots') { if (ws.slot === 0 && room.state === 'lobby') { room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots||0)); broadcast(room, lobbyInfo(room)); } return; }
-    if (m.k === 'start' || m.k === 'restart') { if (ws.slot === 0) { if (m.bots!=null) room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots)); beginGame(room); } return; }
+    if (m.k === 'start' || m.k === 'restart') { if (ws.slot === 0) { if (m.bots!=null) room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots)); if (m.teams!=null) room.teamMode = !!m.teams; beginGame(room); } return; }
     if (m.k === 'input') { if (room.world && room.state === 'playing') room.world.setInput(ws.slot, { dir:m.dir, bomb:m.bomb }); return; }
   });
   ws.on('close', () => {
