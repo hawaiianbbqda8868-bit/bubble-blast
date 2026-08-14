@@ -1,9 +1,17 @@
 // Bubble Blast — shared simulation core (runs in the browser for single-player
 // AND on the Node server for authoritative online play). No DOM, no rendering.
 // makeWorld() returns one independent game world.
+//
+// relay/game-core.js is a byte-identical copy of this file (the relay deploys
+// on its own, so it cannot reach up a directory). After editing this file run
+// `npm run sync-core` in relay/, or the server silently plays by older rules —
+// that is how online team mode stayed broken for a release.
 (function (root) {
 'use strict';
 
+// Bumped with the game rules. The relay reports it on its health URL, so you can
+// check which rules the server is actually running: curl the relay's address.
+const CORE_VERSION = 'v32';
 const COLS = 19, ROWS = 17;
 const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // Skates give diminishing returns: seconds shaved off a tile at each speed level.
@@ -56,12 +64,14 @@ const THEMES = {
 function makeWorld() {
   let grid, players, bubbles, blasts, powerups, decor, theme, shipCenter;
   let burstCounter = 0, gameState = 'lobby', winnerSlot = -1, diff = 'normal';
+  let teamMode = false, winnerTeam = -1;
   let events = [];
 
   const inB = (x,y) => x>=0 && x<COLS && y>=0 && y<ROWS;
   const key = (x,y) => x+','+y;
   function bubbleAt(x,y){ return bubbles.find(b=>b.x===x&&b.y===y); }
   function passable(x,y){ return inB(x,y) && grid[y][x]===FLOOR && !bubbleAt(x,y); }
+  function areAllies(a,b){ return teamMode && a && b && a.team!=null && a.team===b.team; }
   function tileOf(p){ if(!p.moving) return {x:p.tx,y:p.ty}; return p.t<0.5?{x:p.fx,y:p.fy}:{x:p.tox,y:p.toy}; }
   function blastCells(x,y,range){
     const cells=[{x,y}], dirs=[[1,0],[-1,0],[0,1],[0,-1]];
@@ -106,12 +116,13 @@ function makeWorld() {
     const spice=[{move:+0.05,trap:-0.15},{move:0,trap:0},{move:-0.03,trap:+0.1}][i];
     return { move:Math.max(0.1,base.move+spice.move), trap:Math.min(1,Math.max(0,base.trap+spice.trap)), react:base.react, esc:base.esc };
   }
-  function reset(controls, colors, d){
+  function reset(controls, colors, d, teams){
     diff = d || 'normal';
     controls = controls || ['local','ai','ai','ai'];
     colors = colors || [];
+    teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
     buildMap();
-    bubbles=[]; blasts=[]; powerups=[]; burstCounter=0; gameState='playing'; winnerSlot=-1; events=[];
+    bubbles=[]; blasts=[]; powerups=[]; burstCounter=0; gameState='playing'; winnerSlot=-1; winnerTeam=-1; events=[];
     const used=new Set(colors.filter(Boolean));
     const botPool=PALETTE.filter(c=>!used.has(c));
     let bi=0, bp=0;
@@ -121,6 +132,8 @@ function makeWorld() {
       const aiLike=(ctrl==='ai'||ctrl==='none');
       const p=makePlayer(s[0],s[1], !aiLike, cap, aiLike?botPlan(bi++%3):null);
       p.control=ctrl; p.slot=i; p.captain=false; p.inHeld=[]; p.inBomb=false; p._lastHeld=null;
+      p.inTap=false; p.tapTtl=0; p.inSeq=0; p._stepSeq=0; p._doneSeq=0;
+      p.team = teamMode ? (teams[i]==null?null:teams[i]) : null;
       if(ctrl==='none') p.alive=false;   // slot not in this match (player-count < 4)
       return p;
     });
@@ -215,6 +228,11 @@ function makeWorld() {
     for(const q of players){ if(!q.alive||q===p||q.control==='ai') continue; const t=tileOf(q); const d=Math.abs(t.x-ht.x)+Math.abs(t.y-ht.y); if(d<bd){ bd=d; best=q; } }
     return best;
   }
+  function nearestEnemy(p){   // team mode: hunt the closest opponent (not a teammate)
+    const ht=tileOf(p); let best=null, bd=1e9;
+    for(const q of players){ if(!q.alive||q===p||areAllies(p,q)) continue; const t=tileOf(q); const d=Math.abs(t.x-ht.x)+Math.abs(t.y-ht.y); if(d<bd){ bd=d; best=q; } }
+    return best;
+  }
   function botAct(p, danger){
     const here=tileOf(p), x=here.x, y=here.y;
     p.urgent=false;
@@ -226,7 +244,11 @@ function makeWorld() {
       if(!dir) dir=bfsStep(x,y,(gx,gy)=>!danger.has(key(gx,gy)),(nx,ny)=>passable(nx,ny));
       return { dir, bubble:false };
     }
-    const me=nearestHuman(p);
+    // opportunistic: step onto an adjacent trapped sailor to pop it (kill enemy / free teammate) when safe
+    for(const dir in DIRV){ const [dx,dy]=DIRV[dir]; const nx=x+dx, ny=y+dy;
+      const v=players.find(q=>q!==p&&q.alive&&q.trapped&&q.tx===nx&&q.ty===ny);
+      if(v && passable(nx,ny) && !danger.has(key(nx,ny))){ p.target=null; return { dir, bubble:false }; } }
+    const me = teamMode ? nearestEnemy(p) : nearestHuman(p);
     const mt = me ? tileOf(me) : null;
     const canBomb = p.active===0 && canEscapeInTime(p,x,y,danger);
     if(mt && canBomb && (mt.x===x||mt.y===y) && Math.abs(mt.x-x)+Math.abs(mt.y-y)<=p.range && lineClear(x,y,mt.x,mt.y) && Math.random()<p.botDiff.trap){
@@ -267,6 +289,9 @@ function makeWorld() {
     for(const p of players){
       if(!p.alive) continue;
       p.anim+=dt;
+      // an owed tap that never found a free tile (walled in, or trapped in a
+      // bubble meanwhile) must not fire minutes later
+      if(p.inTap && (p.tapTtl-=dt)<=0){ p.inHeld=[]; p.inTap=false; }
       if(p.trapped){
         p.trapTimer-=dt;
         const elapsed=TRAP_TIME-p.trapTimer;
@@ -280,7 +305,10 @@ function makeWorld() {
         if(p.control==='ai'){ p.think-=dt; if(p.think<=0){ p.think=0.05; const a=botAct(p,danger); dir=a.dir; bubble=a.bubble; p._dir=dir; } else dir=p._dir; }
         else { dir=(p.inHeld&&p.inHeld.length)?p.inHeld[p.inHeld.length-1]:null; if(p.inBomb){ bubble=true; p.inBomb=false; } }
         if(bubble) placeBubble(p);
-        if(dir){ const [dx,dy]=DIRV[dir]; const nx=p.tx+dx, ny=p.ty+dy; if(passable(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir; } }
+        if(dir){ const [dx,dy]=DIRV[dir]; const nx=p.tx+dx, ny=p.ty+dy;
+          if(passable(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir;
+            p._stepSeq=p.inSeq;                                                  // which press this step belongs to
+            if(p.inTap){ p.inHeld=[]; p.inTap=false; p._doneSeq=p.inSeq; } } }   // a tap buys one step
       }
       if(p.moving){
         p.t += dt/(p.isHuman?moveDur(p):(botMoveDur(p)*(p.urgent?0.55:1)));
@@ -298,13 +326,31 @@ function makeWorld() {
       // a bubble traps everyone incl. its owner — but bots ignore their OWN blast so the AI doesn't suicide
       const hits=blasts.filter(bl=>bl.x===x&&bl.y===y&&(p.isHuman||bl.owner!==p));
       if(!hits.length) continue;
-      if(p.trapped){ if(hits.some(h=>h.id!==p.trappedBy)){ p.alive=false; events.push('pop'); } }
+      if(p.trapped){
+        const popper=hits.find(h=>h.id!==p.trappedBy);
+        if(popper){ if(popper.owner && areAllies(popper.owner,p)){ p.trapped=false; p.trappedBy=null; p.struggle=0; events.push('free'); }
+                    else { p.alive=false; events.push('pop'); } }
+      }
       else { p.trapped=true; p.trappedBy=hits[0].id; p.trapTimer=TRAP_TIME; p.struggle=0;
         p.escapeAt = p.isHuman ? 999 : ((Math.random()<p.botDiff.esc) ? (0.7+Math.random()*1.5) : 999);
         p.moving=false; p.tx=x; p.ty=y; events.push('trap'); }
     }
+    // contact pop: a sailor standing on a trapped sailor pops the bubble (enemy=out, teammate=freed)
+    for(const pt of players){
+      if(!pt.alive || !pt.trapped) continue;
+      for(const q of players){
+        if(q===pt || !q.alive || q.trapped) continue;
+        const tq=tileOf(q);
+        if(tq.x===pt.tx && tq.y===pt.ty){
+          if(areAllies(q,pt)){ pt.trapped=false; pt.trappedBy=null; pt.struggle=0; events.push('free'); }
+          else { pt.alive=false; events.push('pop'); }
+          break;
+        }
+      }
+    }
     const alive=players.filter(p=>p.alive);
-    if(alive.length<=1){ gameState='over'; winnerSlot=alive.length?alive[0].slot:-1; }
+    if(teamMode){ const ts=new Set(alive.map(p=>p.team)); if(ts.size<=1){ gameState='over'; winnerTeam=alive.length?alive[0].team:-1; winnerSlot=alive.length?alive[0].slot:-1; } }
+    else if(alive.length<=1){ gameState='over'; winnerSlot=alive.length?alive[0].slot:-1; }
     return events;
   }
 
@@ -312,14 +358,35 @@ function makeWorld() {
     const p=players&&players[slot];
     if(!p || p.control==='ai') return;
     if(p.trapped && inp.dir && p._lastHeld!==inp.dir) p.struggle+=0.18;
-    p.inHeld = inp.dir?[inp.dir]:[]; if(inp.bomb) p.inBomb=true; p._lastHeld=inp.dir||null;
+    // inp.tap means the key is already up and the client is only replaying its
+    // tap buffer: that press is worth exactly ONE step, however long the round
+    // trip took. inp.seq identifies the press, so we can tell "the step already
+    // running IS this press" (spend it, stop after) from "the running step
+    // belongs to an earlier press" (this one is still owed a step) — a fast
+    // double tap must not be swallowed. Older clients send neither field and
+    // keep the previous behaviour.
+    const seq = inp.seq|0;
+    if(inp.dir && inp.tap){
+      if(seq && (seq===p._doneSeq || (p.moving && seq===p._stepSeq))){
+        p.inHeld=[]; p.inTap=false; p._doneSeq=seq;   // this press already got its step
+      } else {
+        p.inHeld=[inp.dir]; p.inSeq=seq; p.inTap=true; p.tapTtl=0.4; // still owed exactly one
+      }
+    } else if(!inp.dir && p.inTap && seq && seq===p.inSeq){
+      // "all keys up" for the very press we still owe a step to — it arrives
+      // when the client's tap buffer expires, which can beat the step out of the
+      // gate if the sailor was busy. Keep the debt instead of cancelling it.
+    } else {
+      p.inHeld = inp.dir?[inp.dir]:[]; p.inSeq=seq; p.inTap=false;
+    }
+    if(inp.bomb) p.inBomb=true; p._lastHeld=inp.dir||null;
   }
   function snapshot(){
-    return { gs:gameState, win:winnerSlot, ev:events,
+    return { gs:gameState, win:winnerSlot, ev:events, tm:teamMode, wt:winnerTeam,
       grid: grid.map(r=>r.join('')),
       players: players.map(p=>({slot:p.slot,tx:p.tx,ty:p.ty,fx:p.fx,fy:p.fy,tox:p.tox,toy:p.toy,
         t:p.t,moving:p.moving,dir:p.dir,alive:p.alive,trapped:p.trapped,trapTimer:p.trapTimer,struggle:p.struggle,
-        range:p.range,maxBubbles:p.maxBubbles,speed:p.speed,isHuman:p.isHuman,capColor:p.capColor,anim:p.anim,
+        range:p.range,maxBubbles:p.maxBubbles,speed:p.speed,isHuman:p.isHuman,capColor:p.capColor,anim:p.anim,team:p.team,
         md:(p.isHuman?moveDur(p):botMoveDur(p)),color:SKIN,colorLight:SKIN_LT})),
       bubbles: bubbles.map(b=>({x:b.x,y:b.y,fuse:b.fuse,range:b.range})),
       blasts: blasts.map(b=>({x:b.x,y:b.y,timer:b.timer})),
@@ -332,7 +399,7 @@ function makeWorld() {
     get gameState(){ return gameState; }, get winnerSlot(){ return winnerSlot; } };
 }
 
-const API = { makeWorld, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, SPEED_GAIN, MAX_SPEED,
+const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, SPEED_GAIN, MAX_SPEED,
   FLOOR, WALL, BARREL, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;

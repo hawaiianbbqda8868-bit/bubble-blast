@@ -11,7 +11,7 @@ const DT = 1 / 30;
 
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('bubble-blast server ok');
+  res.end('bubble-blast server ok — core ' + BB.CORE_VERSION);   // check a deploy actually took
 });
 const wss = new WebSocketServer({ server });
 
@@ -90,7 +90,7 @@ wss.on('connection', (ws) => {
     if (!room) return;
     if (m.k === 'setbots') { if (ws.slot === 0 && room.state === 'lobby') { room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots||0)); broadcast(room, lobbyInfo(room)); } return; }
     if (m.k === 'start' || m.k === 'restart') { if (ws.slot === 0) { if (m.bots!=null) room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots)); if (m.teams!=null) room.teamMode = !!m.teams; beginGame(room); } return; }
-    if (m.k === 'input') { if (room.world && room.state === 'playing') room.world.setInput(ws.slot, { dir:m.dir, bomb:m.bomb }); return; }
+    if (m.k === 'input') { if (room.world && room.state === 'playing') room.world.setInput(ws.slot, { dir:m.dir, bomb:m.bomb, tap:m.tap, seq:m.seq }); return; }
   });
   ws.on('close', () => {
     const room = rooms.get(ws.roomCode); if (!room) return;

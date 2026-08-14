@@ -4,7 +4,11 @@
   "private": true,
   "description": "WebSocket room relay for Bubble Blast online multiplayer",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
+  "scripts": {
+    "start": "node server.js",
+    "sync-core": "cp ../game-core.js game-core.js",
+    "check-core": "cmp ../game-core.js game-core.js && echo 'core in sync' || (echo 'game-core.js drifted — run: npm run sync-core' && exit 1)"
+  },
   "dependencies": { "ws": "^8.18.0" },
   "engines": { "node": ">=18" }
 }

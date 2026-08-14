@@ -1,9 +1,17 @@
 // Bubble Blast — shared simulation core (runs in the browser for single-player
 // AND on the Node server for authoritative online play). No DOM, no rendering.
 // makeWorld() returns one independent game world.
+//
+// relay/game-core.js is a byte-identical copy of this file (the relay deploys
+// on its own, so it cannot reach up a directory). After editing this file run
+// `npm run sync-core` in relay/, or the server silently plays by older rules —
+// that is how online team mode stayed broken for a release.
 (function (root) {
 'use strict';
 
+// Bumped with the game rules. The relay reports it on its health URL, so you can
+// check which rules the server is actually running: curl the relay's address.
+const CORE_VERSION = 'v32';
 const COLS = 19, ROWS = 17;
 const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // Skates give diminishing returns: seconds shaved off a tile at each speed level.
@@ -124,6 +132,7 @@ function makeWorld() {
       const aiLike=(ctrl==='ai'||ctrl==='none');
       const p=makePlayer(s[0],s[1], !aiLike, cap, aiLike?botPlan(bi++%3):null);
       p.control=ctrl; p.slot=i; p.captain=false; p.inHeld=[]; p.inBomb=false; p._lastHeld=null;
+      p.inTap=false; p.tapTtl=0; p.inSeq=0; p._stepSeq=0; p._doneSeq=0;
       p.team = teamMode ? (teams[i]==null?null:teams[i]) : null;
       if(ctrl==='none') p.alive=false;   // slot not in this match (player-count < 4)
       return p;
@@ -280,6 +289,9 @@ function makeWorld() {
     for(const p of players){
       if(!p.alive) continue;
       p.anim+=dt;
+      // an owed tap that never found a free tile (walled in, or trapped in a
+      // bubble meanwhile) must not fire minutes later
+      if(p.inTap && (p.tapTtl-=dt)<=0){ p.inHeld=[]; p.inTap=false; }
       if(p.trapped){
         p.trapTimer-=dt;
         const elapsed=TRAP_TIME-p.trapTimer;
@@ -293,7 +305,10 @@ function makeWorld() {
         if(p.control==='ai'){ p.think-=dt; if(p.think<=0){ p.think=0.05; const a=botAct(p,danger); dir=a.dir; bubble=a.bubble; p._dir=dir; } else dir=p._dir; }
         else { dir=(p.inHeld&&p.inHeld.length)?p.inHeld[p.inHeld.length-1]:null; if(p.inBomb){ bubble=true; p.inBomb=false; } }
         if(bubble) placeBubble(p);
-        if(dir){ const [dx,dy]=DIRV[dir]; const nx=p.tx+dx, ny=p.ty+dy; if(passable(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir; } }
+        if(dir){ const [dx,dy]=DIRV[dir]; const nx=p.tx+dx, ny=p.ty+dy;
+          if(passable(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir;
+            p._stepSeq=p.inSeq;                                                  // which press this step belongs to
+            if(p.inTap){ p.inHeld=[]; p.inTap=false; p._doneSeq=p.inSeq; } } }   // a tap buys one step
       }
       if(p.moving){
         p.t += dt/(p.isHuman?moveDur(p):(botMoveDur(p)*(p.urgent?0.55:1)));
@@ -343,7 +358,28 @@ function makeWorld() {
     const p=players&&players[slot];
     if(!p || p.control==='ai') return;
     if(p.trapped && inp.dir && p._lastHeld!==inp.dir) p.struggle+=0.18;
-    p.inHeld = inp.dir?[inp.dir]:[]; if(inp.bomb) p.inBomb=true; p._lastHeld=inp.dir||null;
+    // inp.tap means the key is already up and the client is only replaying its
+    // tap buffer: that press is worth exactly ONE step, however long the round
+    // trip took. inp.seq identifies the press, so we can tell "the step already
+    // running IS this press" (spend it, stop after) from "the running step
+    // belongs to an earlier press" (this one is still owed a step) — a fast
+    // double tap must not be swallowed. Older clients send neither field and
+    // keep the previous behaviour.
+    const seq = inp.seq|0;
+    if(inp.dir && inp.tap){
+      if(seq && (seq===p._doneSeq || (p.moving && seq===p._stepSeq))){
+        p.inHeld=[]; p.inTap=false; p._doneSeq=seq;   // this press already got its step
+      } else {
+        p.inHeld=[inp.dir]; p.inSeq=seq; p.inTap=true; p.tapTtl=0.4; // still owed exactly one
+      }
+    } else if(!inp.dir && p.inTap && seq && seq===p.inSeq){
+      // "all keys up" for the very press we still owe a step to — it arrives
+      // when the client's tap buffer expires, which can beat the step out of the
+      // gate if the sailor was busy. Keep the debt instead of cancelling it.
+    } else {
+      p.inHeld = inp.dir?[inp.dir]:[]; p.inSeq=seq; p.inTap=false;
+    }
+    if(inp.bomb) p.inBomb=true; p._lastHeld=inp.dir||null;
   }
   function snapshot(){
     return { gs:gameState, win:winnerSlot, ev:events, tm:teamMode, wt:winnerTeam,
@@ -363,7 +399,7 @@ function makeWorld() {
     get gameState(){ return gameState; }, get winnerSlot(){ return winnerSlot; } };
 }
 
-const API = { makeWorld, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, SPEED_GAIN, MAX_SPEED,
+const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, SPEED_GAIN, MAX_SPEED,
   FLOOR, WALL, BARREL, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;
