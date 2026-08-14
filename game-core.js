@@ -6,6 +6,11 @@
 
 const COLS = 19, ROWS = 17;
 const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
+// Skates give diminishing returns: seconds shaved off a tile at each speed level.
+// A flat bonus made top speed 11 tiles/s, which is impossible to steer or stop;
+// this tops out at 0.138 s/tile (~7 tiles/s, 1.45x) while every pickup still helps.
+const SPEED_GAIN = [0, 0.020, 0.036, 0.048, 0.056, 0.062];
+const MAX_SPEED = SPEED_GAIN.length - 1;
 const POWERUP_CHANCE = 0.36, BARREL_FILL = 0.78;
 const FLOOR = 0, WALL = 1, BARREL = 2;
 const PU_RANGE = 0, PU_BUBBLE = 1, PU_SPEED = 2;
@@ -256,8 +261,9 @@ function makeWorld() {
     return { dir, bubble:false };
   }
 
-  function moveDur(p){ return Math.max(0.08, BASE_MOVE - 0.022*p.speed); }
-  function botMoveDur(p){ return Math.max(0.09, p.botDiff.move - 0.02*p.speed); }
+  function speedGain(s){ return SPEED_GAIN[Math.max(0, Math.min(MAX_SPEED, s|0))]; }
+  function moveDur(p){ return BASE_MOVE - speedGain(p.speed); }
+  function botMoveDur(p){ return Math.max(0.12, p.botDiff.move - speedGain(p.speed)); }
 
   function update(dt){
     events=[];
@@ -294,7 +300,7 @@ function makeWorld() {
         if(p.t>=1){
           p.t=0; p.moving=false; p.tx=p.tox; p.ty=p.toy;
           for(let i=powerups.length-1;i>=0;i--){ if(powerups[i].x===p.tx&&powerups[i].y===p.ty){ const t=powerups.splice(i,1)[0].type;
-            if(t===PU_RANGE) p.range=Math.min(8,p.range+1); else if(t===PU_BUBBLE) p.maxBubbles=Math.min(8,p.maxBubbles+1); else p.speed=Math.min(5,p.speed+1);
+            if(t===PU_RANGE) p.range=Math.min(8,p.range+1); else if(t===PU_BUBBLE) p.maxBubbles=Math.min(8,p.maxBubbles+1); else p.speed=Math.min(MAX_SPEED,p.speed+1);
             events.push('power'); } }
         }
       }
@@ -357,7 +363,7 @@ function makeWorld() {
     get gameState(){ return gameState; }, get winnerSlot(){ return winnerSlot; } };
 }
 
-const API = { makeWorld, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE,
+const API = { makeWorld, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, SPEED_GAIN, MAX_SPEED,
   FLOOR, WALL, BARREL, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;
