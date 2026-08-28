@@ -1,11 +1,15 @@
 // Network-first for the app shell so players always get the latest client
 // when online (prevents online version drift between devices); cache is just
 // the offline fallback for single-player.
-const CACHE = 'bnb-v32';
+const CACHE = 'bnb-v33';
 const ASSETS = ['./', './index.html', './game-core.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  // cache:'reload' on every asset too: GitHub Pages' max-age=600 could otherwise
+  // pair a fresh index.html with a stale game-core.js, and the sim would quietly
+  // play by the old rules.
+  const fresh = ASSETS.map(u => new Request(u, { cache: 'reload' }));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(fresh)).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
   e.waitUntil(

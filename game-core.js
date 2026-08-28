@@ -11,9 +11,15 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v32';
+const CORE_VERSION = 'v33';
 const COLS = 19, ROWS = 17;
 const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
+// How long a direction must be held before the sailor starts WALKING. Anything
+// shorter is a tap and buys exactly one tile, however long the tile took — a
+// thumb on the D-pad rests ~250ms, which used to bleed into a second tile (and
+// a third with skates on, at 0.138s per tile). Holding past this walks on, so
+// crossing the map is still one long press.
+const TAP_HOLD = 0.32;
 // Skates give diminishing returns: seconds shaved off a tile at each speed level.
 // A flat bonus made top speed 11 tiles/s, which is impossible to steer or stop;
 // this tops out at 0.138 s/tile (~7 tiles/s, 1.45x) while every pickup still helps.
@@ -133,6 +139,7 @@ function makeWorld() {
       const p=makePlayer(s[0],s[1], !aiLike, cap, aiLike?botPlan(bi++%3):null);
       p.control=ctrl; p.slot=i; p.captain=false; p.inHeld=[]; p.inBomb=false; p._lastHeld=null;
       p.inTap=false; p.tapTtl=0; p.inSeq=0; p._stepSeq=0; p._doneSeq=0;
+      p._pressSeq=-1; p.pressT=0; p.pressSteps=0;
       p.team = teamMode ? (teams[i]==null?null:teams[i]) : null;
       if(ctrl==='none') p.alive=false;   // slot not in this match (player-count < 4)
       return p;
@@ -289,6 +296,13 @@ function makeWorld() {
     for(const p of players){
       if(!p.alive) continue;
       p.anim+=dt;
+      // How long the CURRENT press has lasted. inSeq identifies one press of one
+      // direction (the client bumps it on every new press), so releasing and
+      // pressing again starts a fresh press even in the same direction.
+      if(p.control!=='ai'){
+        if(p.inSeq!==p._pressSeq){ p._pressSeq=p.inSeq; p.pressT=0; p.pressSteps=0; }
+        else p.pressT+=dt;
+      }
       // an owed tap that never found a free tile (walled in, or trapped in a
       // bubble meanwhile) must not fire minutes later
       if(p.inTap && (p.tapTtl-=dt)<=0){ p.inHeld=[]; p.inTap=false; }
@@ -305,9 +319,13 @@ function makeWorld() {
         if(p.control==='ai'){ p.think-=dt; if(p.think<=0){ p.think=0.05; const a=botAct(p,danger); dir=a.dir; bubble=a.bubble; p._dir=dir; } else dir=p._dir; }
         else { dir=(p.inHeld&&p.inHeld.length)?p.inHeld[p.inHeld.length-1]:null; if(p.inBomb){ bubble=true; p.inBomb=false; } }
         if(bubble) placeBubble(p);
-        if(dir){ const [dx,dy]=DIRV[dir]; const nx=p.tx+dx, ny=p.ty+dy;
+        // One press = one tile. A second tile only once the press has lasted
+        // TAP_HOLD — and never off a tap the player has already let go of
+        // (p.inTap), whose direction the client is only replaying.
+        const mayStep = p.control==='ai' || p.pressSteps===0 || (p.pressT>=TAP_HOLD && !p.inTap);
+        if(dir && mayStep){ const [dx,dy]=DIRV[dir]; const nx=p.tx+dx, ny=p.ty+dy;
           if(passable(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir;
-            p._stepSeq=p.inSeq;                                                  // which press this step belongs to
+            p._stepSeq=p.inSeq; p.pressSteps++;                                  // which press this step belongs to
             if(p.inTap){ p.inHeld=[]; p.inTap=false; p._doneSeq=p.inSeq; } } }   // a tap buys one step
       }
       if(p.moving){
@@ -399,7 +417,7 @@ function makeWorld() {
     get gameState(){ return gameState; }, get winnerSlot(){ return winnerSlot; } };
 }
 
-const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, SPEED_GAIN, MAX_SPEED,
+const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, TAP_HOLD, SPEED_GAIN, MAX_SPEED,
   FLOOR, WALL, BARREL, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;

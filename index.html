@@ -197,7 +197,7 @@
 <script src="game-core.js"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v32';
+const APP_VERSION = 'v33';
 const COLS = 19, ROWS = 17, TILE = 40;
 const FUSE = 2.0;        // bubble fuse seconds
 const BLAST_TIME = 0.5;  // water lasts
@@ -1163,7 +1163,7 @@ function loop(ts){
   const dt=Math.min(0.05,(ts-last)/1000)||0; last=ts;
   if(netRole==='off'){                    // single-player: local simulation
     if(state==='playing'){
-      if(players&&players[0]){ players[0].inHeld=effectiveDirArr(); if(wantBubble) players[0].inBomb=true; }
+      if(players&&players[0]){ players[0].inHeld=effectiveDirArr(); players[0].inSeq=inSeq; if(wantBubble) players[0].inBomb=true; }
       wantBubble=false;
       update(dt);
       // A buffered tap is worth exactly one step: drop it the moment the sailor

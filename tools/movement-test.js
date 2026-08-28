@@ -35,7 +35,7 @@ const CLIENT_SRC = ['armDir', 'pressDir', 'releaseDir', 'effectiveDirArr', 'netS
 const FRAME = 1000 / 60, SERVER_DT = 1 / 30;    // relay/server.js: DT = 1/30
 
 // script: [[atMs, dir, holdMs], ...]
-function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FRAME }) {
+function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FRAME, center = false }) {
   let clock = 0;
   const toServer = [], toClient = [];
   const world = BB.makeWorld();
@@ -44,6 +44,10 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
   for (let y = 1; y < w0.grid.length - 1; y++)          // open the interior: no test should be wall-limited
     for (let x = 1; x < w0.grid[y].length - 1; x++) w0.grid[y][x] = BB.FLOOR;
   w0.players[0].speed = speed;
+  if (center) {                                        // spawns sit in a corner: up/left are the hull
+    const p0 = w0.players[0];
+    p0.tx = p0.fx = p0.tox = BB.MIDX; p0.ty = p0.fy = p0.toy = BB.MIDY;
+  }
   const from = { x: w0.players[0].tx, y: w0.players[0].ty };
 
   const ctx = {
@@ -160,6 +164,27 @@ for (const rtt of RTTS) {
   check(`online, turn mid-step, rtt ${rtt}ms`,
     r.dx <= 1 && r.dy <= 1 && r.dy >= 0 && r.tiles <= 2 && r.tilesAfterLastRelease === 0,
     `dx=${r.dx} dy=${r.dy} in ${r.tiles} tiles, ${r.tilesAfterLastRelease} drifted`);
+}
+
+console.log('\n6. A press is ONE tile however long you hold it, up to the hold threshold\n');
+// The thumb on a D-pad rests far longer than a keyboard tap — especially on the
+// up/down arms, which are a longer reach. Anything under BB.TAP_HOLD is a tap.
+for (const hold of [200, 240, 280]) {
+  eq(`single-player, ${hold}ms press`, play({ online: false, script: [[0, 'right', hold]], runMs: 2500 }).tiles, 1);
+  eq(`single-player, ${hold}ms press, speed 3`, play({ online: false, script: [[0, 'right', hold]], speed: 3, runMs: 2500 }).tiles, 1);
+  for (const rtt of RTTS) {
+    eq(`online, ${hold}ms press, rtt ${rtt}ms`, play({ online: true, script: [[0, 'right', hold]], rttMs: rtt, runMs: 2500 }).tiles, 1);
+    eq(`online, ${hold}ms press, speed 3, rtt ${rtt}ms`, play({ online: true, script: [[0, 'right', hold]], rttMs: rtt, speed: 3, runMs: 2500 }).tiles, 1);
+  }
+}
+for (const dir of ['up', 'down', 'left', 'right']) {   // no axis is special
+  eq(`single-player, 260ms press ${dir}`, play({ online: false, script: [[0, dir, 260]], runMs: 2500, center: true }).tiles, 1);
+}
+
+console.log('\n7. Past the threshold he walks on (holding still works)\n');
+for (const online of [false, true]) {
+  const r = play({ online, rttMs: online ? 60 : 0, script: [[0, 'right', 1500]], runMs: 4000 });
+  check(`${online ? 'online' : 'single-player'}, 1500ms hold`, r.tiles >= 5 && r.tiles <= 8, `${r.tiles} tiles (want 5-8)`);
 }
 
 console.log(failed ? `\n${failed} FAILING CASE(S)` : '\nall cases pass');
