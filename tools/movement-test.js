@@ -97,8 +97,13 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
     .flatMap(([at, dir, hold]) => [[200 + at, 'down', dir], [200 + at + hold, 'up', dir]])
     .sort((a, b) => a[0] - b[0]);
   const lastRelease = Math.max(...events.map(e => e[0]));
-  const driftAfter = lastRelease + rttMs + (BB.BASE_MOVE - BB.SPEED_GAIN[speed]) * 1000 * 1.5;
+  // A tile already in flight when you let go still has to land — and the first
+  // tile of a press runs at TAP_HOLD pace until the release reaches the sim, so
+  // that is the longest it can legitimately take. Anything AFTER this is drift.
+  const settle = Math.max(BB.TAP_HOLD, BB.BASE_MOVE - BB.SPEED_GAIN[speed]);
+  const driftAfter = lastRelease + rttMs + settle * 1000 * 1.5;
   let ei = 0, acc = 0, tiles = 0, tilesAfterLastRelease = 0;  // ...AfterLastRelease = drift
+  const landings = [];                                        // when each tile arrived
   let prev = { x: from.x, y: from.y };
 
   for (; clock < runMs; clock += frameMs) {
@@ -121,11 +126,12 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
     const me = livePlayers()[0];
     if (me.tx !== prev.x || me.ty !== prev.y) {
       tiles++; if (clock > driftAfter) tilesAfterLastRelease++;
+      landings.push(Math.round(clock - 200));         // ms since the first press
       prev = { x: me.tx, y: me.ty };
     }
   }
   const me = livePlayers()[0];
-  return { tiles, tilesAfterLastRelease, dx: me.tx - from.x, dy: me.ty - from.y };
+  return { tiles, tilesAfterLastRelease, landings, dx: me.tx - from.x, dy: me.ty - from.y };
 }
 
 let failed = 0;
@@ -220,6 +226,21 @@ console.log('\n8. One sim: the page must not grow a copy of its own\n');
 for (const fn of ['update', 'reset', 'botAct', 'placeBubble', 'moveDur']) {
   check(`index.html has no ${fn}() of its own`, !new RegExp('\\nfunction ' + fn + '\\s*\\(').test(HTML),
     'single-player and the relay must run the same game-core.js');
+}
+
+console.log('\n9. Holding walks smoothly — no stutter once he is going\n');
+// The tap rule used to make the second tile wait for TAP_HOLD, which put a
+// 133ms dead stop in the middle of every walk. The first tile is paced by the
+// press; every tile after it has to arrive on time.
+for (const speed of [0, 3, 5]) {
+  const tile = (BB.BASE_MOVE - BB.SPEED_GAIN[speed]) * 1000;
+  for (const online of [false, true]) {
+    const r = play({ online, rttMs: online ? 60 : 0, speed, script: [[0, 'right', 1500]], runMs: 2500 });
+    const gaps = r.landings.slice(1).map((v, i) => v - r.landings[i]).slice(1);   // skip the first tile
+    const worst = gaps.length ? Math.max(...gaps) : Infinity;
+    check(`${online ? 'online' : 'single-player'}, speed ${speed}`, worst <= tile * 1.25,
+      `worst gap ${worst}ms (a tile is ${Math.round(tile)}ms)`);
+  }
 }
 
 console.log(failed ? `\n${failed} FAILING CASE(S)` : '\nall cases pass');

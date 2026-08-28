@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v36';
+const CORE_VERSION = 'v37';
 const COLS = 19, ROWS = 17;
 const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -19,6 +19,11 @@ const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOV
 // thumb on the D-pad rests ~250ms, which used to bleed into a second tile (and
 // a third with skates on, at 0.138s per tile). Holding past this walks on, so
 // crossing the map is still one long press.
+// The first tile of a press is paced by the press itself: while the button is
+// still down that tile takes TAP_HOLD — about as long as a thumb rests on a pad
+// — so "tap or walk?" is answered exactly when the tile ends. Hold, and the
+// next tile starts the same instant at full speed, with no stutter; let go, and
+// the tile finishes at full speed and he stops on it. One press, one tile.
 const TAP_HOLD = 0.32;
 // 半身位. A sailor can stop ON the line between two tiles (a half-step), and
 // his damage point sits a little BELOW his centre — a blast catches him only
@@ -156,7 +161,7 @@ function makeWorld() {
   function makePlayer(tx,ty,isHuman,capColor,botDiff){
     return { tx,ty, fx:tx,fy:ty, tox:tx,toy:ty, t:0, moving:false, dir:'down',
       isHuman, color:SKIN, colorLight:SKIN_LT, capColor:capColor||'#1a1a1f', alive:true,
-      range:1, maxBubbles:1, active:0, speed:0, ride:null,
+      range:1, maxBubbles:1, active:0, speed:0, ride:null, stepLen:1,
       trapped:false, trappedBy:null, trapTimer:0, struggle:0, escapeAt:0,
       botDiff, think:0, anim:0, target:null, targetTtl:0 };
   }
@@ -327,6 +332,16 @@ function makeWorld() {
   function moveDur(p){ return rideDur(p, BASE_MOVE - speedGain(p.speed)); }
   function botMoveDur(p){ return rideDur(p, Math.max(0.12, p.botDiff.move - speedGain(p.speed))); }
 
+  // How long the step in progress takes. Half-steps cover half the ground in
+  // half the time, so the walking speed is the same either way — except for the
+  // first tile of a press, which waits out the thumb (see TAP_HOLD).
+  function stepDur(p){
+    const base = (p.isHuman ? moveDur(p) : botMoveDur(p)*(p.urgent?0.55:1)) * (p.stepLen||1);
+    if(p.control==='ai' || p.pressSteps>1) return base;
+    const stillDown = p.inHeld && p.inHeld.length && !p.inTap;
+    return (stillDown && base < TAP_HOLD) ? TAP_HOLD : base;
+  }
+
   // Walking into a crate shoves it one tile and you take its place — but only
   // into empty floor, so a crate can never bury a sailor, a bubble or an item.
   function pushCrate(p, cx, cy, dx, dy){
@@ -372,7 +387,7 @@ function makeWorld() {
       // direction (the client bumps it on every new press), so releasing and
       // pressing again starts a fresh press even in the same direction.
       if(p.control!=='ai'){
-        if(p.inSeq!==p._pressSeq){ p._pressSeq=p.inSeq; p.pressT=0; p.pressSteps=0; }
+        if(p.inSeq!==p._pressSeq){ p._pressSeq=p.inSeq; p.pressT=dt; p.pressSteps=0; }
         else p.pressT+=dt;
       }
       // an owed tap that never found a free tile (walled in, or trapped in a
@@ -407,12 +422,13 @@ function makeWorld() {
           const cx = p.tx+dx, cy = p.ty+dy;
           if(!half && !off && p.control!=='ai' && inB(cx,cy) && grid[cy][cx]===CRATE) pushCrate(p,cx,cy,dx,dy);
           if(canStand(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir;
+            p.stepLen=len;
             if(dx) p.faceX=dx;                                                   // which way he leans
             p._stepSeq=p.inSeq; p.pressSteps++;                                  // which press this step belongs to
             if(p.inTap){ p.inHeld=[]; p.inTap=false; p._doneSeq=p.inSeq; } } }   // a tap buys one step
       }
       if(p.moving){
-        p.t += dt/(p.isHuman?moveDur(p):(botMoveDur(p)*(p.urgent?0.55:1)));
+        p.t += dt/stepDur(p);
         if(p.t>=1){
           p.t=0; p.moving=false; p.tx=p.tox; p.ty=p.toy;
           for(let i=powerups.length-1;i>=0;i--){        // on a line he covers two tiles
