@@ -4,15 +4,16 @@
 // netSendInput / loop, extracted verbatim from index.html) against whichever sim
 // actually runs in that mode — and they are two different pieces of code:
 //
-//   single-player: index.html's OWN sim (update / reset / moveDur ... extracted
-//                  verbatim from the page), stepped at 60fps in the browser
+//   single-player: a local BB.makeWorld(), stepped at 60fps through the page's
+//                  own loop() and syncWorld() — exactly what startGame() sets up
 //   online:        relay/game-core.js, ticked at the relay's 1/30 s with input
 //                  and snapshots delayed by a simulated round trip — the same
 //                  wiring relay/server.js uses, including exactly which fields
 //                  it forwards to setInput()
 //
-// Testing single-player against the core instead is how a movement fix that
-// only landed in game-core.js once looked green while the game still misbehaved.
+// Both modes are the same sim now. Section 8 fails if the page ever grows a
+// second one again: three movement fixes in a row landed in only one of two
+// hand-synced copies, and the suite could not see it.
 //
 // Rules under test:
 //   1. one press of a direction -> exactly one tile, at any speed or latency
@@ -37,52 +38,19 @@ function extract(name) {                        // pull `function name(...){...}
   }
   throw new Error('unbalanced braces for ' + name);
 }
-const CLIENT_SRC = ['armDir', 'pressDir', 'releaseDir', 'effectiveDirArr', 'netSendInput', 'loop']
+const CLIENT_SRC = ['armDir', 'pressDir', 'releaseDir', 'effectiveDirArr', 'netSendInput', 'syncWorld', 'loop']
   .map(extract).join('\n');
 
 const FRAME = 1000 / 60, SERVER_DT = 1 / 30;    // relay/server.js: DT = 1/30
-
-// index.html's single-player sim, lifted out of the page and given the handful
-// of globals it reads (no DOM, no canvas, no sound, and no bots in these
-// scenarios). Constants come from the core so the two can't silently diverge.
-const SIM_FNS = ['areAllies', 'bubbleAt', 'passable', 'tileOf', 'blastCells', 'buildMap',
-                 'makePlayer', 'botPlan', 'reset', 'placeBubble', 'burst',
-                 'speedGain', 'moveDur', 'botMoveDur', 'update'];
-function makeClientSim() {
-  const src = SIM_FNS.map(extract).join('\n');
-  return new Function('BB', `
-    'use strict';
-    const { COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, SPEED_GAIN, MAX_SPEED,
-            TAP_HOLD, MAX_RANGE, MAX_BUBBLES, FLOOR, WALL, BARREL, PALETTE, DIRV,
-            SKIN, SKIN_LT, SPAWNS, MAPS, THEMES, MIDX, MIDY } = BB;
-    const POWERUP_CHANCE = 0.36, BARREL_FILL = 0.78, PU_RANGE = 0, PU_BUBBLE = 1, PU_SPEED = 2;
-    const inB = (x, y) => x >= 0 && x < COLS && y >= 0 && y < ROWS, key = (x, y) => x + ',' + y;
-    const sfx = new Proxy({}, { get: () => () => {} });
-    let grid, players = [], bubbles = [], blasts = [], powerups = [], decor, theme, shipCenter;
-    let burstCounter = 0, diff = 'normal', teamMode = false;
-    let netRole = 'off', state = 'playing', mySlot = 0, deadShown = false;
-    const endGame = () => { state = 'over'; }, showResult = () => {};
-    const botAct = () => ({ dir: null, bubble: false });
-    ${src}
-    return { reset, update, get players(){ return players; }, get grid(){ return grid; } };
-  `)(BB);
-}
 
 // script: [[atMs, dir, holdMs], ...]
 function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FRAME, center = false }) {
   let clock = 0;
   const toServer = [], toClient = [];
-  let world = null, sim, livePlayers, liveGrid;
-  if (online) {                                        // the relay runs game-core.js
-    world = BB.makeWorld();
-    world.reset(['local', 'none', 'none', 'none'], ['#fff'], 'normal');
-    sim = world; livePlayers = () => world.read().players; liveGrid = () => world.read().grid;
-  } else {                                             // single-player runs index.html's own sim
-    const c = makeClientSim();
-    c.reset(['local', 'none', 'none', 'none'], ['#fff']);
-    sim = c; livePlayers = () => c.players; liveGrid = () => c.grid;
-  }
-  const w0 = { grid: liveGrid(), players: livePlayers() };
+  const world = BB.makeWorld();                        // one sim, both modes
+  world.reset(['local', 'none', 'none', 'none'], ['#fff'], 'normal');
+  const livePlayers = () => world.read().players;
+  const w0 = { grid: world.read().grid, players: livePlayers() };
   for (let y = 1; y < w0.grid.length - 1; y++)          // open the interior: no test should be wall-limited
     for (let x = 1; x < w0.grid[y].length - 1; x++) w0.grid[y][x] = BB.FLOOR;
   w0.players[0].speed = speed;
@@ -96,7 +64,8 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
     clock: 0, online, mySlot: 0,
     players: online ? world.snapshot().players : w0.players,
     send: o => { if (o && o.k === 'input') toServer.push([clock + rttMs / 2, o]); },
-    update: dt => sim.update(dt),
+    update: dt => world.update(dt),
+    world,
   };
   const C = new Function('ctx', `
     const performance = { now: () => ctx.clock };
@@ -105,17 +74,21 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
     const held = [];
     let wantBubble = false, bufferDir = null, bufferT = 0, inSeq = 0;
     let lastInDir = '_', lastInTap = false, lastInT = 0;
-    let players = ctx.players, state = 'playing', mySlot = ctx.mySlot;
+    let grid, players = ctx.players, bubbles, blasts, powerups, decor, theme, shipCenter;
+    let state = 'playing', mySlot = ctx.mySlot, teamMode = false;
     let netRole = ctx.online ? 'host' : 'off';
+    const world = ctx.online ? null : ctx.world;      // startGame() makes this for single-player
+    const sfx = new Proxy({}, { get: () => () => {} });
+    const endGame = () => { state = 'over'; };
     const ws = { readyState: 1 };
     const wsSend = o => ctx.send(o);
     const mashEscape = () => {};
-    const update = dt => ctx.update(dt);
     const clientAdvance = () => {};
     const render = () => {};
     ${CLIENT_SRC}
-    return { loop, pressDir, releaseDir, setPlayers: p => { players = p; } };
+    return { loop, pressDir, releaseDir, syncWorld, setPlayers: p => { players = p; } };
   `)(ctx);
+  if (!online) C.syncWorld();                          // startGame() does this before the first frame
 
   const events = script
     .flatMap(([at, dir, hold]) => [[200 + at, 'down', dir], [200 + at + hold, 'up', dir]])
@@ -131,7 +104,7 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
       const [, kind, dir] = events[ei++];
       kind === 'down' ? C.pressDir(dir) : C.releaseDir(dir);
     }
-    if (!online) { ctx.players = livePlayers(); C.setPlayers(ctx.players); C.loop(clock); }
+    if (!online) C.loop(clock);                        // loop() calls syncWorld() itself
     else {
       C.loop(clock);
       while (toServer.length && toServer[0][0] <= clock) {
@@ -227,6 +200,12 @@ console.log('\n7. Past the threshold he walks on (holding still works)\n');
 for (const online of [false, true]) {
   const r = play({ online, rttMs: online ? 60 : 0, script: [[0, 'right', 1500]], runMs: 4000 });
   check(`${online ? 'online' : 'single-player'}, 1500ms hold`, r.tiles >= 5 && r.tiles <= 8, `${r.tiles} tiles (want 5-8)`);
+}
+
+console.log('\n8. One sim: the page must not grow a copy of its own\n');
+for (const fn of ['update', 'reset', 'botAct', 'placeBubble', 'moveDur']) {
+  check(`index.html has no ${fn}() of its own`, !new RegExp('\\nfunction ' + fn + '\\s*\\(').test(HTML),
+    'single-player and the relay must run the same game-core.js');
 }
 
 console.log(failed ? `\n${failed} FAILING CASE(S)` : '\nall cases pass');

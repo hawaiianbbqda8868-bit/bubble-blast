@@ -197,28 +197,23 @@
 <script src="game-core.js"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v34';
+const APP_VERSION = 'v35';
 const COLS = 19, ROWS = 17, TILE = 40;
 const FUSE = 2.0;        // bubble fuse seconds
 const BLAST_TIME = 0.5;  // water lasts
 const TRAP_TIME = 3.0;   // time inside the bubble before it pops (= death)
 const ESCAPE_NEED = 1.0; // how much "wiggle" breaks you free in time
-const BASE_MOVE = 0.20; // sec per tile (player) — steadier
 // Skates give diminishing returns: seconds shaved off a tile at each speed level.
 // A flat bonus made top speed 11 tiles/s, which is impossible to steer or stop;
 // this tops out at 0.138 s/tile (~7 tiles/s, 1.45x) while every pickup still helps.
-const SPEED_GAIN = BB.SPEED_GAIN;
 const MAX_SPEED = BB.MAX_SPEED;
-// index.html keeps its OWN copy of the sim for single-player (the server runs
-// game-core.js). Every movement rule below must therefore match the core's —
-// take the numbers from it rather than restating them here.
-const TAP_HOLD = BB.TAP_HOLD;                                  // press held this long = walk, shorter = one tile
+// The page does not simulate anything: single-player runs BB.makeWorld(), the
+// same core the relay runs. What is left here is for the HUD and the renderer.
 const MAX_RANGE = BB.MAX_RANGE, MAX_BUBBLES = BB.MAX_BUBBLES;
-const POWERUP_CHANCE = 0.36;
-const BARREL_FILL = 0.78;
 
-const FLOOR=0, WALL=1, BARREL=2;
-const PU_RANGE=0, PU_BUBBLE=1, PU_SPEED=2;
+const FLOOR=BB.FLOOR, WALL=BB.WALL, BARREL=BB.BARREL, CRATE=BB.CRATE;
+const ITEM_ICON=['💧','🫧','👟','🏎️','🐢','🎁'];   // indexed by the core's PU_* values
+const RIDE_ICON={ car:'🏎️', turtle:'🐢' };
 
 const SKIN='#fde7cf', SKIN_LT='#fff8ee';   // characters are cream-bodied
 const PALETTE = ['#ff5b5b','#ff9d3a','#ffe24d','#5fe08a','#46c8ff','#7c8cff','#c77dff','#ff7ad1'];
@@ -241,7 +236,7 @@ const CAM_FOLLOW = 0.18;   // camera smoothing toward the player
 
 let grid, players, bubbles, blasts, powerups, state='start', diff='normal';
 let decor=new Map(), theme='pirate', shipCenter=null;
-let burstCounter = 0, muted=false;
+let muted=false;
 let last = 0;
 // networking (server-authoritative; host & joiners are both thin clients)
 let netRole='off', mySlot=0, ws=null, roomCode='', winnerSlot=-1, deadShown=false, netTick=0;
@@ -264,6 +259,9 @@ const sfx = {
   burst:()=>{beep(150,0.18,'sawtooth',0.07); beep(90,0.22,'square',0.05);},
   power:()=>{beep(660,0.07,'square',0.06); setTimeout(()=>beep(990,0.09,'square',0.06),70);},
   trap:()=>beep(300,0.15,'sine',0.06),
+  ride:()=>{beep(300,0.09,'square',0.06); setTimeout(()=>beep(620,0.12,'square',0.06),80);},
+  surprise:()=>[660,880,660,1046].forEach((f,i)=>setTimeout(()=>beep(f,0.07,'square',0.05),i*70)),
+  push:()=>beep(120,0.09,'sawtooth',0.05),
   pop:()=>{beep(420,0.1,'square',0.07); setTimeout(()=>beep(180,0.16,'sawtooth',0.06),60);},
   free:()=>{beep(700,0.08,'sine',0.06); setTimeout(()=>beep(1050,0.12,'sine',0.06),70);},
   win:()=>[523,659,784,1046].forEach((f,i)=>setTimeout(()=>beep(f,0.18,'square',0.06),i*140)),
@@ -271,88 +269,15 @@ const sfx = {
 };
 
 // ====================== HELPERS ======================
-const inB = (x,y)=> x>=0&&x<COLS&&y>=0&&y<ROWS;
 const key = (x,y)=> x+','+y;
-function bubbleAt(x,y){ return bubbles.find(b=>b.x===x&&b.y===y); }
-function passable(x,y){ return inB(x,y) && grid[y][x]===FLOOR && !bubbleAt(x,y); }
-function tileOf(p){ // tile an entity currently occupies (snap by move progress)
-  if(!p.moving) return {x:p.tx, y:p.ty};
-  return p.t<0.5 ? {x:p.fx, y:p.fy} : {x:p.tox, y:p.toy};
-}
 
 // water cells a blast at (x,y,range) would cover, stopping at walls/barrels
-function blastCells(x,y,range){
-  const cells=[{x,y}];
-  const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
-  for(const [dx,dy] of dirs){
-    for(let i=1;i<=range;i++){
-      const nx=x+dx*i, ny=y+dy*i;
-      if(!inB(nx,ny)||grid[ny][nx]===WALL) break;
-      cells.push({x:nx,y:ny});
-      if(grid[ny][nx]===BARREL) break; // water destroys the barrel then stops
-    }
-  }
-  return cells;
-}
 
 // ====================== MAP (one of several shared layouts) ======================
-function buildMap(mapId){
-  grid = Array.from({length:ROWS}, ()=>Array(COLS).fill(FLOOR));
-  decor = new Map(); shipCenter = null;
-  for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++)
-    if(x===0||y===0||x===COLS-1||y===ROWS-1){ grid[y][x]=WALL; decor.set(key(x,y),'hull'); }
-  const id = (mapId!=null) ? mapId : Math.floor(Math.random()*MAPS.length);
-  const M = MAPS[id]; theme = M.theme;
-  const set=(x,y,t)=>{ if(inB(x,y)){ grid[y][x]=WALL; decor.set(key(x,y),t); if(t==='ship') shipCenter={x:MIDX,y:MIDY}; } };
-  M.layout(set);
-  const safe = new Set();
-  for(const [cx,cy] of SPAWNS) [[0,0],[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{
-    const x=cx+dx, y=cy+dy; if(inB(x,y)&&grid[y][x]!==WALL) safe.add(key(x,y)); });
-  const fill = M.fill || BARREL_FILL;
-  for(let y=1;y<ROWS-1;y++) for(let x=1;x<COLS-1;x++)
-    if(grid[y][x]===FLOOR && !safe.has(key(x,y)) && Math.random()<fill) grid[y][x]=BARREL;
-}
 
-function makePlayer(tx,ty,isHuman,capColor,botDiff){
-  return { tx,ty, fx:tx,fy:ty, tox:tx,toy:ty, t:0, moving:false, dir:'down',
-    isHuman, color:SKIN, colorLight:SKIN_LT, capColor:capColor||'#1a1a1f', alive:true,
-    range:1, maxBubbles:1, active:0, speed:0,
-    trapped:false, trappedBy:null, trapTimer:0, struggle:0, escapeAt:0,
-    botDiff, think:0, anim:0, target:null, targetTtl:0 };
-}
 
 // ====================== RESET / START ======================
-function reset(controls, colors, teams){
-  controls = controls || ['local','ai','ai','ai'];
-  colors = colors || [];
-  teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
-  buildMap();
-  bubbles=[]; blasts=[]; powerups=[]; burstCounter=0;
-  const used=new Set(colors.filter(Boolean));
-  const botPool=PALETTE.filter(c=>!used.has(c));
-  let bi=0, bp=0;
-  players=SPAWNS.map((s,i)=>{
-    const ctrl=controls[i]||'none';
-    const aiLike=(ctrl==='ai'||ctrl==='none');
-    let cap=colors[i] || botPool[bp++ % botPool.length] || PALETTE[i%PALETTE.length];
-    const p=makePlayer(s[0],s[1], !aiLike, cap, aiLike?botPlan(bi++%3):null);
-    p.control=ctrl; p.slot=i; p.captain=false; p.inHeld=[]; p.inBomb=false; p._lastHeld=null;
-    p.inSeq=0; p._pressSeq=-1; p.pressT=0; p.pressSteps=0;
-    p.team = teamMode ? (teams[i]==null?null:teams[i]) : null;
-    if(ctrl==='none') p.alive=false;
-    return p;
-  });
-}
 // difficulty per bot, blended with chosen level so "mixed" feels varied
-function botPlan(i){
-  const base = {easy:{move:0.27,trap:0.3,react:0.32,esc:0.12},
-                normal:{move:0.20,trap:0.55,react:0.6,esc:0.25},
-                hard:{move:0.15,trap:0.85,react:0.9,esc:0.4}}[diff];
-  const spice=[{move:+0.05,trap:-0.15},{move:0,trap:0},{move:-0.03,trap:+0.1}][i];
-  return { move:Math.max(0.1,base.move+spice.move),
-           trap:Math.min(1,Math.max(0,base.trap+spice.trap)),
-           react:base.react, esc:base.esc };
-}
 
 function hideOverlays(){
   document.getElementById('startScreen').classList.add('hidden');
@@ -365,11 +290,21 @@ function showResult(win){
   document.getElementById('overScreen').classList.remove('hidden');
   win ? sfx.win() : sfx.lose();
 }
+// Single-player runs its own copy of the SAME world the relay runs, so there is
+// one set of rules for both modes. The page only feeds it input and draws it.
+let world=null;
+function syncWorld(){                    // the sim's live state, straight into the render globals
+  const r=world.read();
+  grid=r.grid; players=r.players; bubbles=r.bubbles; blasts=r.blasts; powerups=r.powerups;
+  decor=r.decor; theme=r.theme; shipCenter=r.shipCenter;
+}
 function startGame(){ netRole='off'; mySlot=0;
   const n=Math.max(1,Math.min(7,botCount));            // single-player needs at least 1 bot
   const controls=['local']; for(let i=0;i<n;i++) controls.push('ai'); while(controls.length<8) controls.push('none');
   const teams = menuTeams ? autoTeams(controls) : null;
-  reset(controls, [myColor], teams); state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
+  teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
+  world=BB.makeWorld(); world.reset(controls, [myColor], diff, teams); syncWorld();
+  state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
 function endGame(win){ state='over'; showResult(win); }
 
 // ====================== INPUT ======================
@@ -532,329 +467,20 @@ function renderRooms(list){
 })();
 
 // ====================== BUBBLES / BLASTS ======================
-function placeBubble(p){
-  const {x,y}=tileOf(p);
-  if(p.active>=p.maxBubbles || bubbleAt(x,y)) return;
-  bubbles.push({x,y,fuse:FUSE,range:p.range,owner:p});
-  p.active++; sfx.place();
-}
-function burst(b){
-  const id=++burstCounter;
-  const cells=blastCells(b.x,b.y,b.range);
-  for(const c of cells){
-    if(grid[c.y][c.x]===BARREL){
-      grid[c.y][c.x]=FLOOR;
-      if(Math.random()<POWERUP_CHANCE)
-        powerups.push({x:c.x,y:c.y,type:Math.floor(Math.random()*3)});
-    }
-    blasts.push({x:c.x,y:c.y,timer:BLAST_TIME,id,owner:b.owner});
-    const chain=bubbleAt(c.x,c.y);
-    if(chain && chain!==b && chain.fuse>0) chain.fuse=0; // chain reaction
-  }
-  sfx.burst();
-}
 
 // ====================== AI ======================
 // BFS: first-step direction from (sx,sy) to nearest tile where isGoal, walking canEnter tiles
-function bfsStep(sx,sy,isGoal,canEnter){
-  if(isGoal(sx,sy)) return null;
-  const q=[[sx,sy]], seen=new Set([key(sx,sy)]), from=new Map();
-  const dirs=[['up',0,-1],['down',0,1],['left',-1,0],['right',1,0]];
-  while(q.length){
-    const [cx,cy]=q.shift();
-    for(const [name,dx,dy] of dirs){
-      const nx=cx+dx, ny=cy+dy, k=key(nx,ny);
-      if(seen.has(k)||!inB(nx,ny)) continue;
-      if(!canEnter(nx,ny)) continue;
-      seen.add(k); from.set(k,{px:cx,py:cy,dir:name});
-      if(isGoal(nx,ny)){
-        // walk back to the start; return the FIRST step's direction
-        let e=from.get(k);
-        while(!(e.px===sx&&e.py===sy)) e=from.get(key(e.px,e.py));
-        return e.dir;
-      }
-      q.push([nx,ny]);
-    }
-  }
-  return null;
-}
-function lineClear(x1,y1,x2,y2){
-  if(x1===x2){ const a=Math.min(y1,y2),b=Math.max(y1,y2);
-    for(let y=a+1;y<b;y++) if(grid[y][x1]!==FLOOR) return false; return true; }
-  if(y1===y2){ const a=Math.min(x1,x2),b=Math.max(x1,x2);
-    for(let x=a+1;x<b;x++) if(grid[y1][x]!==FLOOR) return false; return true; }
-  return false;
-}
 // nearest tile (returns the goal tile itself, or null) via BFS over canEnter tiles
-function nearestTile(sx,sy,pred,canEnter){
-  if(pred(sx,sy)) return {x:sx,y:sy};
-  const q=[[sx,sy]], seen=new Set([key(sx,sy)]);
-  const dirs=[[0,-1],[0,1],[-1,0],[1,0]];
-  while(q.length){
-    const [cx,cy]=q.shift();
-    for(const [dx,dy] of dirs){
-      const nx=cx+dx, ny=cy+dy, k=key(nx,ny);
-      if(seen.has(k)||!inB(nx,ny)||!canEnter(nx,ny)) continue;
-      seen.add(k); if(pred(nx,ny)) return {x:nx,y:ny}; q.push([nx,ny]);
-    }
-  }
-  return null;
-}
 // Can a bubble dropped at (x,y) be survived? You may RUN ALONG the blast line —
 // you just need to reach a tile beyond it before it pops (2s is plenty).
-function escapeExists(p,x,y,danger){
-  const cross=new Set(blastCells(x,y,p.range).map(c=>key(c.x,c.y)));
-  return !!bfsStep(x,y,
-    (gx,gy)=>!cross.has(key(gx,gy)) && !danger.has(key(gx,gy)),
-    (nx,ny)=>passable(nx,ny) && !danger.has(key(nx,ny)));
-}
-function adjacentBarrel(x,y){
-  return [[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>{
-    const bx=x+dx,by=y+dy; return inB(bx,by)&&grid[by][bx]===BARREL; });
-}
 // Can a bomb at (x,y) be escaped IN TIME? Must reach a tile outside its blast
 // (and outside current danger) within the fuse window — not just "a path exists".
-function canEscapeInTime(p,x,y,danger){
-  const cross=new Set(blastCells(x,y,p.range).map(c=>key(c.x,c.y)));
-  const md=p.isHuman?moveDur(p):botMoveDur(p);
-  // require reaching safety with a comfortable margin (decision lag + a beat to spare)
-  const maxSteps=Math.max(2, Math.floor((FUSE-1.0)/md));
-  const q=[[x,y,0]], seen=new Set([key(x,y)]);
-  const dirs=[[0,-1],[0,1],[-1,0],[1,0]];
-  while(q.length){
-    const [cx,cy,d]=q.shift();
-    if(d>0 && !cross.has(key(cx,cy)) && !danger.has(key(cx,cy))) return true;
-    if(d>=maxSteps) continue;
-    for(const [dx,dy] of dirs){ const nx=cx+dx, ny=cy+dy, k=key(nx,ny);
-      if(seen.has(k)||!passable(nx,ny)||danger.has(k)) continue;
-      seen.add(k); q.push([nx,ny,d+1]);
-    }
-  }
-  return false;
-}
-function pickTarget(p,x,y,danger){
-  const canEnter=(nx,ny)=>passable(nx,ny)&&!danger.has(key(nx,ny));
-  // grab a nearby power-up
-  let t=nearestTile(x,y,(gx,gy)=>powerups.some(pu=>pu.x===gx&&pu.y===gy),canEnter);
-  if(t) return t;
-  // a tile beside a barrel we can safely bomb from
-  t=nearestTile(x,y,(gx,gy)=>adjacentBarrel(gx,gy)&&escapeExists(p,gx,gy,danger),canEnter);
-  if(t) return t;
-  return null;
-}
 // first step toward (tx,ty) TREATING BARRELS AS PASSABLE — used to dig toward the player
-function digStep(sx,sy,tx,ty,danger){
-  return bfsStep(sx,sy,(gx,gy)=>gx===tx&&gy===ty,
-    (nx,ny)=> inB(nx,ny) && grid[ny][nx]!==WALL && !bubbleAt(nx,ny) && !danger.has(key(nx,ny)));
-}
 
-function botAct(p, danger){
-  const here=tileOf(p), x=here.x, y=here.y;
-  p.urgent=false;
-
-  // 1) standing in danger -> run (FAST) to the nearest safe tile.
-  if(danger.has(key(x,y))){
-    p.target=null; p.urgent=true;
-    // only walk through our OWN blast (unavoidable); avoid running into other bombs' blasts
-    const ownCross=new Set();
-    for(const b of bubbles) if(b.owner===p) for(const c of blastCells(b.x,b.y,b.range)) ownCross.add(key(c.x,c.y));
-    let dir = bfsStep(x,y,(gx,gy)=>!danger.has(key(gx,gy)),
-                          (nx,ny)=>passable(nx,ny) && (!danger.has(key(nx,ny))||ownCross.has(key(nx,ny))));
-    // last resort: any passable route out
-    if(!dir) dir = bfsStep(x,y,(gx,gy)=>!danger.has(key(gx,gy)),(nx,ny)=>passable(nx,ny));
-    return { dir, bubble:false };
-  }
-
-  // opportunistic: step onto an adjacent trapped sailor to pop it (kill enemy / free teammate) when safe
-  for(const dir in DIRV){ const [dx,dy]=DIRV[dir]; const nx=x+dx, ny=y+dy;
-    const v=players.find(q=>q!==p&&q.alive&&q.trapped&&q.tx===nx&&q.ty===ny);
-    if(v && passable(nx,ny) && !danger.has(key(nx,ny))){ p.target=null; return { dir, bubble:false }; } }
-
-  let me=players[0];
-  if(teamMode){ let bd=1e9, best=null; for(const q of players){ if(q===p||!q.alive||areAllies(p,q)) continue; const t=tileOf(q); const d=Math.abs(t.x-x)+Math.abs(t.y-y); if(d<bd){bd=d;best=q;} } me=best||players[0]; }
-  const mt = me && me.alive ? tileOf(me) : null;
-  // bots only keep ONE live bomb at a time (multi-bomb juggling gets them killed)
-  const canBomb = p.active===0 && canEscapeInTime(p,x,y,danger);
-
-  // 2) ATTACK: already lined up with the player within range -> bomb them
-  if(mt && canBomb && (mt.x===x||mt.y===y)
-     && Math.abs(mt.x-x)+Math.abs(mt.y-y)<=p.range && lineClear(x,y,mt.x,mt.y)
-     && Math.random()<p.botDiff.trap){
-    p.target=null; return { dir:null, bubble:true };
-  }
-
-  // 3) HUNT: advance toward the player, blasting through any barrel in the way
-  if(mt && Math.random()<p.botDiff.react){
-    const d=digStep(x,y,mt.x,mt.y,danger);
-    if(d){
-      const [dx,dy]=DIRV[d], nx=x+dx, ny=y+dy;
-      if(grid[ny][nx]===BARREL){
-        if(canBomb && Math.random()<p.botDiff.trap){ p.target=null; return { dir:null, bubble:true }; }
-        // can't safely blast right now -> fall through to farming
-      } else { p.target=null; return { dir:d, bubble:false }; }
-    }
-  }
-
-  // 4) FARM: bomb an adjacent barrel, else head to a committed target (persisted -> no jitter)
-  if(canBomb && adjacentBarrel(x,y) && Math.random()<p.botDiff.trap){ p.target=null; return { dir:null, bubble:true }; }
-  if(!p.target || (p.target.x===x&&p.target.y===y) || p.targetTtl<=0
-     || !passable(p.target.x,p.target.y)){
-    p.target = pickTarget(p,x,y,danger);
-    p.targetTtl = 50;
-  }
-  p.targetTtl--;
-  let dir=null;
-  if(p.target)
-    dir=bfsStep(x,y,(gx,gy)=>gx===p.target.x&&gy===p.target.y,
-                    (nx,ny)=>passable(nx,ny)&&!danger.has(key(nx,ny)));
-  if(!dir){ // nothing reachable -> drift to a random safe neighbour
-    p.target=null;
-    const opts=[[1,0,'right'],[-1,0,'left'],[0,1,'down'],[0,-1,'up']]
-      .filter(([dx,dy])=>passable(x+dx,y+dy)&&!danger.has(key(x+dx,y+dy)));
-    if(opts.length) dir=opts[Math.floor(Math.random()*opts.length)][2];
-  }
-  return { dir, bubble:false };
-}
 
 // ====================== UPDATE ======================
-function speedGain(s){ return SPEED_GAIN[Math.max(0, Math.min(MAX_SPEED, s|0))]; }
-function moveDur(p){ return BASE_MOVE - speedGain(p.speed); }
-function botMoveDur(p){ return Math.max(0.12, p.botDiff.move - speedGain(p.speed)); }
 const DIRV={up:[0,-1],down:[0,1],left:[-1,0],right:[1,0]};
 
-function update(dt){
-  // bubbles fuse + chain bursts
-  for(const b of bubbles) b.fuse-=dt;
-  let popped=true;
-  while(popped){
-    popped=false;
-    for(let i=bubbles.length-1;i>=0;i--){
-      if(bubbles[i].fuse<=0){
-        const b=bubbles.splice(i,1)[0];
-        if(b.owner.active>0) b.owner.active--;
-        burst(b); popped=true;
-      }
-    }
-  }
-  // blasts decay
-  for(let i=blasts.length-1;i>=0;i--){ blasts[i].timer-=dt; if(blasts[i].timer<=0) blasts.splice(i,1); }
-
-  // shared danger map for bots
-  const danger=new Set();
-  for(const bl of blasts) danger.add(key(bl.x,bl.y));
-  for(const b of bubbles) for(const c of blastCells(b.x,b.y,b.range)) danger.add(key(c.x,c.y));
-
-  // entities
-  for(const p of players){
-    if(!p.alive) continue;
-    p.anim+=dt;
-    // How long the current press has lasted. inSeq identifies one press of one
-    // direction (loop() copies it from the input layer), so letting go and
-    // pressing again starts a fresh press even in the same direction.
-    if(p.control!=='ai'){
-      if(p.inSeq!==p._pressSeq){ p._pressSeq=p.inSeq; p.pressT=0; p.pressSteps=0; }
-      else p.pressT+=dt;
-    }
-
-    if(p.trapped){
-      p.trapTimer-=dt;
-      const elapsed=TRAP_TIME-p.trapTimer;
-      const freed = p.isHuman ? (p.struggle>=ESCAPE_NEED) : (elapsed>=p.escapeAt);
-      if(freed){ p.trapped=false; p.trappedBy=null; p.struggle=0; }   // wriggled out alive
-      else if(p.trapTimer<=0){ p.alive=false; sfx.pop(); }            // bubble popped -> out
-      continue; // can't move while trapped
-    }
-
-    // pick direction / action when settled on a tile
-    if(!p.moving){
-      let dir=null, bubble=false;
-      if(p.control==='ai'){
-        p.think-=dt;
-        if(p.think<=0){ p.think=0.05; const a=botAct(p,danger); dir=a.dir; bubble=a.bubble; p._dir=dir; }
-        else dir=p._dir;
-      } else { // human: local or remote
-        dir = (p.inHeld && p.inHeld.length) ? p.inHeld[p.inHeld.length-1] : null;
-        if(p.inBomb){ bubble=true; p.inBomb=false; }
-      }
-      if(bubble) placeBubble(p);
-      // One press = one tile. A second tile only once the press has lasted
-      // TAP_HOLD, so a slow thumb on the pad still moves exactly one tile.
-      const mayStep = p.control==='ai' || p.pressSteps===0 || p.pressT>=TAP_HOLD;
-      if(dir && mayStep){
-        const [dx,dy]=DIRV[dir]; const nx=p.tx+dx, ny=p.ty+dy;
-        if(passable(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir; p.pressSteps++; }
-      }
-    }
-    // advance movement
-    if(p.moving){
-      p.t += dt/(p.isHuman?moveDur(p):(botMoveDur(p)*(p.urgent?0.55:1)));
-      if(p.t>=1){
-        p.t=0; p.moving=false; p.tx=p.tox; p.ty=p.toy;
-        // pickup
-        for(let i=powerups.length-1;i>=0;i--){
-          if(powerups[i].x===p.tx && powerups[i].y===p.ty){
-            const t=powerups.splice(i,1)[0].type;
-            if(t===PU_RANGE) p.range=Math.min(MAX_RANGE,p.range+1);
-            else if(t===PU_BUBBLE) p.maxBubbles=Math.min(MAX_BUBBLES,p.maxBubbles+1);
-            else p.speed=Math.min(MAX_SPEED,p.speed+1);
-            if(p.isHuman) sfx.power();
-          }
-        }
-      }
-    }
-  }
-  // blast vs entities: trap fresh victims, pop already-trapped ones
-  for(const p of players){
-    if(!p.alive) continue;
-    const {x,y}=tileOf(p);
-    // a bubble traps everyone incl. its owner; bots ignore their OWN blast (so the AI doesn't suicide)
-    const hits=blasts.filter(bl=>bl.x===x&&bl.y===y&&(p.isHuman||bl.owner!==p));
-    if(!hits.length) continue;
-    if(p.trapped){
-      const popper=hits.find(h=>h.id!==p.trappedBy);
-      if(popper){
-        if(popper.owner && areAllies(popper.owner,p)){ p.trapped=false; p.trappedBy=null; p.struggle=0; sfx.free(); }
-        else { p.alive=false; sfx.pop(); }
-      }
-    } else {
-      p.trapped=true; p.trappedBy=hits[0].id; p.trapTimer=TRAP_TIME; p.struggle=0;
-      // humans escape only by wiggling; bots get a difficulty-based chance
-      p.escapeAt = p.isHuman ? 999 : ((Math.random()<p.botDiff.esc) ? (0.7+Math.random()*1.5) : 999);
-      p.moving=false; p.tx=x; p.ty=y;
-      sfx.trap();
-    }
-  }
-
-  // contact pop: a sailor standing on a trapped sailor pops the bubble (enemy=out, teammate=freed)
-  for(const pt of players){
-    if(!pt.alive || !pt.trapped) continue;
-    for(const q of players){
-      if(q===pt || !q.alive || q.trapped) continue;
-      const tq=tileOf(q);
-      if(tq.x===pt.tx && tq.y===pt.ty){
-        if(areAllies(q,pt)){ pt.trapped=false; pt.trappedBy=null; pt.struggle=0; sfx.free(); }
-        else { pt.alive=false; sfx.pop(); }
-        break;
-      }
-    }
-  }
-
-  // win/lose
-  const alive=players.filter(p=>p.alive);
-  if(netRole==='off'){
-    if(teamMode){
-      const teamsAlive=new Set(alive.map(p=>p.team));
-      if(teamsAlive.size<=1 && state==='playing'){ const myTeam=players[0].team; endGame(alive.some(p=>p.team===myTeam)); }
-    } else {
-      if(!players[0].alive) endGame(false);
-      else if(alive.length<=1) endGame(true);
-    }
-  } else { // host: match runs until one sailor/team remains; each device shows its own result
-    if(!deadShown && !players[mySlot].alive){ deadShown=true; showResult(false); }
-    if(alive.length<=1){ state='over'; winnerSlot = alive.length?alive[0].slot:-1;
-      if(!deadShown){ deadShown=true; showResult(winnerSlot===mySlot); } }
-  }
-}
 
 // ====================== RENDER ======================
 function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
@@ -870,6 +496,14 @@ function drawCrate(px,py){ const T=TH();
   ctx.beginPath(); ctx.moveTo(px+5,py+5); ctx.lineTo(px+TILE-5,py+TILE-5);
   ctx.moveTo(px+TILE-5,py+5); ctx.lineTo(px+5,py+TILE-5); ctx.stroke();
   ctx.fillStyle=T.crateSheen; roundRect(px+5,py+5,TILE-10,4,2); ctx.fill();
+}
+// the rope handle that marks a crate you can shove
+function drawRope(px,py){
+  ctx.strokeStyle='rgba(255,245,220,.85)'; ctx.lineWidth=3; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(px+10,py+TILE-11); ctx.lineTo(px+TILE-10,py+TILE-11); ctx.stroke();
+  ctx.strokeStyle='rgba(120,80,30,.55)'; ctx.lineWidth=1.5;
+  for(let i=12;i<TILE-11;i+=5){ ctx.beginPath(); ctx.moveTo(px+i,py+TILE-14); ctx.lineTo(px+i+3,py+TILE-8); ctx.stroke(); }
+  ctx.lineCap='butt';
 }
 function drawHull(px,py){ const T=TH();
   ctx.fillStyle=T.hull; ctx.fillRect(px,py,TILE,TILE);
@@ -939,11 +573,34 @@ function drawCap(p,cx,topY){
   ctx.fillStyle='rgba(255,255,255,.9)';
   ctx.beginPath(); ctx.arc(cx-5,topY,2.1,0,7); ctx.arc(cx+5,topY+1,1.7,0,7); ctx.arc(cx+1,topY-3,1.5,0,7); ctx.fill();
 }
+// what you're riding, drawn under the sailor
+function drawRide(p,cx,cy){
+  const R=TILE*0.32, base=cy+R+3;
+  if(p.ride==='car'){
+    // outlined and wider than the sailor, so it reads against ANY cap colour
+    const w=R*2.5, h=13;
+    ctx.fillStyle='#2b2f3a';
+    for(const wx of [cx-w*0.3,cx+w*0.3]){ ctx.beginPath(); ctx.arc(wx,base+5,5.2,0,7); ctx.fill(); }
+    ctx.fillStyle='#f5d020'; ctx.strokeStyle='#2b2f3a'; ctx.lineWidth=2.5;
+    roundRect(cx-w/2,base-4,w,h,5); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#e8443c'; roundRect(cx-w/2+3,base+1,w-6,3.5,2); ctx.fill();             // racing stripe
+    ctx.fillStyle='rgba(255,255,255,.55)'; roundRect(cx-w/2+3,base-2,w*0.3,3,2); ctx.fill();
+  } else if(p.ride==='turtle'){
+    const face = p.dir==='left' ? -1 : 1;
+    ctx.fillStyle='#3f9d5a'; ctx.beginPath(); ctx.ellipse(cx+R*1.2*face,base-2,R*0.28,R*0.22,0,0,7); ctx.fill();  // head
+    ctx.fillStyle='#4aa864'; ctx.beginPath(); ctx.ellipse(cx,base-1,R*1.15,R*0.72,0,0,7); ctx.fill();
+    ctx.strokeStyle='#2b7440'; ctx.lineWidth=2; ctx.stroke();
+    ctx.fillStyle='#7ddb99';
+    for(const [ox,oy] of [[-R*0.45,-R*0.1],[R*0.45,-R*0.1],[0,R*0.22],[0,-R*0.3]]){
+      ctx.beginPath(); ctx.ellipse(cx+ox,base-1+oy,R*0.22,R*0.15,0,0,7); ctx.fill(); }
+  }
+}
 function drawCharacter(p,cx,cy){
   const R=TILE*0.32, dir=p.dir||'down';
   const wob=p.moving?Math.sin(p.anim*18)*1.3:0, by=cy+wob;
   const step=p.moving?Math.sin(p.anim*18)*3:0;
   ctx.fillStyle='rgba(0,0,0,.22)'; ctx.beginPath(); ctx.ellipse(cx,cy+R+6,R*0.95,4,0,0,7); ctx.fill();
+  if(p.ride) drawRide(p,cx,by);
   if(teamMode && p.team!=null){ ctx.save(); ctx.strokeStyle=TEAM_COLORS[p.team]||'#fff'; ctx.lineWidth=3;
     ctx.shadowColor=TEAM_COLORS[p.team]||'#fff'; ctx.shadowBlur=8;
     ctx.beginPath(); ctx.arc(cx,by,R+4,0,7); ctx.stroke(); ctx.restore(); }
@@ -1026,6 +683,8 @@ function render(){
       else if(t==='lava') drawLava(px,py);
       else if(t==='rock') drawRock(px,py);
       else drawHull(px,py);
+    } else if(v===CRATE){
+      drawCrate(px,py); drawRope(px,py);
     } else if(v===BARREL){
       drawCrate(px,py);
     }
@@ -1037,7 +696,7 @@ function render(){
     const bob=Math.sin(performance.now()/250+pu.x)*2;
     ctx.fillStyle='rgba(0,0,0,.18)'; ctx.beginPath(); ctx.ellipse(px,py+13,11,4,0,0,7); ctx.fill();
     ctx.font='22px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText(['💧','🫧','👟'][pu.type], px, py+bob);
+    ctx.fillText(ITEM_ICON[pu.type]||'💧', px, py+bob);
   }
   // bubbles
   for(const b of bubbles){
@@ -1084,7 +743,8 @@ function render(){
   const me=players[mySlot]||players[0];
   if(me){
     const n=players.filter(p=>p.alive).length;
-    const txt=`💧${me.range}/${MAX_RANGE}  🫧${me.maxBubbles}/${MAX_BUBBLES}  👟${me.speed+1}/${MAX_SPEED+1}   ·   Sailors ${n}`;
+    const ride = me.ride ? '  '+RIDE_ICON[me.ride] : '';
+    const txt=`💧${me.range}/${MAX_RANGE}  🫧${me.maxBubbles}/${MAX_BUBBLES}  👟${me.speed+1}/${MAX_SPEED+1}${ride}   ·   Sailors ${n}`;
     ctx.font='15px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     const w=ctx.measureText(txt).width+28, x=CAM.cssW/2-w/2, y=10;
     ctx.fillStyle='rgba(8,16,30,.55)'; roundRect(x,y,w,26,8); ctx.fill();
@@ -1177,16 +837,24 @@ function netSendInput(){
 // ====================== LOOP ======================
 function loop(ts){
   const dt=Math.min(0.05,(ts-last)/1000)||0; last=ts;
-  if(netRole==='off'){                    // single-player: local simulation
-    if(state==='playing'){
-      if(players&&players[0]){ players[0].inHeld=effectiveDirArr(); players[0].inSeq=inSeq; if(wantBubble) players[0].inBomb=true; }
+  if(netRole==='off'){                    // single-player: step the local world
+    if(state==='playing' && world){
+      const me=players&&players[0];
+      if(me){ me.inHeld=effectiveDirArr(); me.inSeq=inSeq; if(wantBubble) me.inBomb=true; }
       wantBubble=false;
-      update(dt);
+      const ev=world.update(dt);
+      syncWorld();
+      for(const e of ev){ const f=sfx[e]; if(f) f(); }   // the same event list the server sends online
       // A buffered tap is worth exactly one step: drop it the moment the sailor
       // walks, so a released key can't keep steering for the rest of the buffer
       // window. Online this is the server's job instead (see the tap flag in
       // netSendInput) — doing it here as well would cancel taps it has queued.
-      if(players&&players[0]&&players[0].moving) bufferDir=null;
+      if(players[0] && players[0].moving) bufferDir=null;
+      if(state==='playing'){
+        if(teamMode){ if(world.gameState==='over') endGame(players.some(p=>p.alive && p.team===players[0].team)); }
+        else if(!players[0].alive) endGame(false);
+        else if(world.gameState==='over') endGame(true);
+      }
     }
   } else {                                // online: thin client (host & joiners alike)
     if(state==='playing'){ netSendInput(); clientAdvance(dt); }
@@ -1195,8 +863,10 @@ function loop(ts){
   requestAnimationFrame(loop);
 }
 
-// initial paint: build a map for the menu backdrop
-buildMap(); players=[]; bubbles=[]; blasts=[]; powerups=[];
+// initial paint: a map behind the menu, built by the core like any real match
+(function(){ const w=BB.makeWorld(); w.reset(new Array(8).fill('none'), [], 'normal');
+  const r=w.read(); grid=r.grid; decor=r.decor; theme=r.theme; shipCenter=r.shipCenter;
+  players=[]; bubbles=[]; blasts=[]; powerups=[]; })();
 document.getElementById('ver').textContent=APP_VERSION;
 requestAnimationFrame(loop);
 

@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v34';
+const CORE_VERSION = 'v35';
 const COLS = 19, ROWS = 17;
 const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -27,8 +27,17 @@ const SPEED_GAIN = [0, 0.020, 0.036, 0.048, 0.056, 0.062];
 const MAX_SPEED = SPEED_GAIN.length - 1;
 const POWERUP_CHANCE = 0.36, BARREL_FILL = 0.78;
 const MAX_RANGE = 8, MAX_BUBBLES = 8;   // pickup caps, shown in the HUD as x/max
-const FLOOR = 0, WALL = 1, BARREL = 2;
-const PU_RANGE = 0, PU_BUBBLE = 1, PU_SPEED = 2;
+const FLOOR = 0, WALL = 1, BARREL = 2, CRATE = 3;   // CRATE: a barrel you can shove one tile
+const CRATE_SHARE = 0.125;                          // one barrel in eight is pushable
+const PU_RANGE = 0, PU_BUBBLE = 1, PU_SPEED = 2, PU_CAR = 3, PU_TURTLE = 4, PU_SURPRISE = 5;
+// What a popped barrel drops, and what the surprise box rolls into (-1 = a dud).
+// Weights, not percentages — rollFrom() normalises them.
+const DROP_POOL     = [[PU_RANGE,22],[PU_BUBBLE,22],[PU_SPEED,18],[PU_CAR,12],[PU_TURTLE,14],[PU_SURPRISE,12]];
+const SURPRISE_POOL = [[PU_RANGE,25],[PU_BUBBLE,25],[PU_SPEED,15],[PU_CAR,15],[PU_TURTLE,15],[-1,5]];
+// Rides are mounted by walking onto them and lost when a bubble catches you.
+// The car has a floor on its tile time so a maxed skater in one is still
+// steerable; the turtle is a hazard you learn to walk around.
+const RIDE = { car:{ mul:0.70, min:0.120 }, turtle:{ mul:1.90, min:0 } };
 const SKIN = '#fde7cf', SKIN_LT = '#fff8ee';
 const PALETTE = ['#ff5b5b','#ff9d3a','#ffe24d','#5fe08a','#46c8ff','#7c8cff','#c77dff','#ff7ad1'];
 const DIRV = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
@@ -68,6 +77,13 @@ const THEMES = {
   lava:{   f1:'#5a4a42', f2:'#4f4039', crate:'#b5683a', crateIn:'#9c5530', crateFrame:'#6e3a22', crateSheen:'rgba(255,200,150,.25)', hull:'#3a2a24', hull2:'#4a352c', bg:'#3a221c' },
 };
 
+function rollFrom(pool){                            // weighted pick
+  let total=0; for(const [,wt] of pool) total+=wt;
+  let r=Math.random()*total;
+  for(const [v,wt] of pool){ if((r-=wt)<0) return v; }
+  return pool[pool.length-1][0];
+}
+
 function makeWorld() {
   let grid, players, bubbles, blasts, powerups, decor, theme, shipCenter;
   let burstCounter = 0, gameState = 'lobby', winnerSlot = -1, diff = 'normal';
@@ -87,7 +103,7 @@ function makeWorld() {
         const nx=x+dx*i, ny=y+dy*i;
         if(!inB(nx,ny)||grid[ny][nx]===WALL) break;
         cells.push({x:nx,y:ny});
-        if(grid[ny][nx]===BARREL) break;
+        if(grid[ny][nx]===BARREL||grid[ny][nx]===CRATE) break;
       }
     }
     return cells;
@@ -106,13 +122,14 @@ function makeWorld() {
     for(const [cx,cy] of SPAWNS) [[0,0],[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{ const x=cx+dx,y=cy+dy; if(inB(x,y)&&grid[y][x]!==WALL) safe.add(key(x,y)); });
     const fill = M.fill || BARREL_FILL;
     for(let y=1;y<ROWS-1;y++) for(let x=1;x<COLS-1;x++)
-      if(grid[y][x]===FLOOR && !safe.has(key(x,y)) && Math.random()<fill) grid[y][x]=BARREL;
+      if(grid[y][x]===FLOOR && !safe.has(key(x,y)) && Math.random()<fill)
+        grid[y][x] = Math.random()<CRATE_SHARE ? CRATE : BARREL;
   }
 
   function makePlayer(tx,ty,isHuman,capColor,botDiff){
     return { tx,ty, fx:tx,fy:ty, tox:tx,toy:ty, t:0, moving:false, dir:'down',
       isHuman, color:SKIN, colorLight:SKIN_LT, capColor:capColor||'#1a1a1f', alive:true,
-      range:1, maxBubbles:1, active:0, speed:0,
+      range:1, maxBubbles:1, active:0, speed:0, ride:null,
       trapped:false, trappedBy:null, trapTimer:0, struggle:0, escapeAt:0,
       botDiff, think:0, anim:0, target:null, targetTtl:0 };
   }
@@ -156,9 +173,9 @@ function makeWorld() {
   function burst(b){
     const id=++burstCounter, cells=blastCells(b.x,b.y,b.range);
     for(const c of cells){
-      if(grid[c.y][c.x]===BARREL){
+      if(grid[c.y][c.x]===BARREL||grid[c.y][c.x]===CRATE){
         grid[c.y][c.x]=FLOOR;
-        if(Math.random()<POWERUP_CHANCE) powerups.push({x:c.x,y:c.y,type:Math.floor(Math.random()*3)});
+        if(Math.random()<POWERUP_CHANCE) powerups.push({x:c.x,y:c.y,type:rollFrom(DROP_POOL)});
       }
       blasts.push({x:c.x,y:c.y,timer:BLAST_TIME,id,owner:b.owner});
       const chain=bubbleAt(c.x,c.y);
@@ -205,7 +222,7 @@ function makeWorld() {
     const cross=new Set(blastCells(x,y,p.range).map(c=>key(c.x,c.y)));
     return !!bfsStep(x,y,(gx,gy)=>!cross.has(key(gx,gy))&&!danger.has(key(gx,gy)),(nx,ny)=>passable(nx,ny)&&!danger.has(key(nx,ny)));
   }
-  function adjacentBarrel(x,y){ return [[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>{ const bx=x+dx,by=y+dy; return inB(bx,by)&&grid[by][bx]===BARREL; }); }
+  function adjacentBarrel(x,y){ return [[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>{ const bx=x+dx,by=y+dy; return inB(bx,by)&&(grid[by][bx]===BARREL||grid[by][bx]===CRATE); }); }
   function canEscapeInTime(p,x,y,danger){
     const cross=new Set(blastCells(x,y,p.range).map(c=>key(c.x,c.y)));
     const md=p.isHuman?moveDur(p):botMoveDur(p);
@@ -265,7 +282,7 @@ function makeWorld() {
     if(mt && Math.random()<p.botDiff.react){
       const d=digStep(x,y,mt.x,mt.y,danger);
       if(d){ const [dx,dy]=DIRV[d], nx=x+dx, ny=y+dy;
-        if(grid[ny][nx]===BARREL){ if(canBomb && Math.random()<p.botDiff.trap){ p.target=null; return { dir:null, bubble:true }; } }
+        if(grid[ny][nx]===BARREL||grid[ny][nx]===CRATE){ if(canBomb && Math.random()<p.botDiff.trap){ p.target=null; return { dir:null, bubble:true }; } }
         else { p.target=null; return { dir:d, bubble:false }; }
       }
     }
@@ -279,8 +296,35 @@ function makeWorld() {
   }
 
   function speedGain(s){ return SPEED_GAIN[Math.max(0, Math.min(MAX_SPEED, s|0))]; }
-  function moveDur(p){ return BASE_MOVE - speedGain(p.speed); }
-  function botMoveDur(p){ return Math.max(0.12, p.botDiff.move - speedGain(p.speed)); }
+  function rideDur(p, base){ const rd=RIDE[p.ride]; return rd ? Math.max(rd.min, base*rd.mul) : base; }
+  function moveDur(p){ return rideDur(p, BASE_MOVE - speedGain(p.speed)); }
+  function botMoveDur(p){ return rideDur(p, Math.max(0.12, p.botDiff.move - speedGain(p.speed))); }
+
+  // Walking into a crate shoves it one tile and you take its place — but only
+  // into empty floor, so a crate can never bury a sailor, a bubble or an item.
+  function pushCrate(p, cx, cy, dx, dy){
+    const tx=cx+dx, ty=cy+dy;
+    if(!inB(tx,ty) || grid[ty][tx]!==FLOOR || bubbleAt(tx,ty)) return false;
+    if(powerups.some(pu=>pu.x===tx&&pu.y===ty)) return false;
+    for(const q of players){
+      if(!q.alive) continue;
+      const t=tileOf(q);
+      if((t.x===tx&&t.y===ty) || (q.moving&&q.tox===tx&&q.toy===ty)) return false;
+    }
+    grid[cy][cx]=FLOOR; grid[ty][tx]=CRATE; events.push('push');
+    return true;
+  }
+
+  // One pickup. The surprise box rolls here, inside the sim, so everyone online
+  // sees the same result. It can roll a dud, and never another surprise box.
+  function applyItem(p, type){
+    if(type===PU_CAR||type===PU_TURTLE){ p.ride = type===PU_CAR?'car':'turtle'; events.push('ride'); return; }
+    if(type===PU_SURPRISE){ events.push('surprise'); const r=rollFrom(SURPRISE_POOL); if(r>=0) applyItem(p,r); return; }
+    if(type===PU_RANGE) p.range=Math.min(MAX_RANGE,p.range+1);
+    else if(type===PU_BUBBLE) p.maxBubbles=Math.min(MAX_BUBBLES,p.maxBubbles+1);
+    else p.speed=Math.min(MAX_SPEED,p.speed+1);
+    events.push('power');
+  }
 
   function update(dt){
     events=[];
@@ -325,6 +369,8 @@ function makeWorld() {
         // (p.inTap), whose direction the client is only replaying.
         const mayStep = p.control==='ai' || p.pressSteps===0 || (p.pressT>=TAP_HOLD && !p.inTap);
         if(dir && mayStep){ const [dx,dy]=DIRV[dir]; const nx=p.tx+dx, ny=p.ty+dy;
+          // bots treat crates as walls: they bomb them, they never shove them
+          if(p.control!=='ai' && inB(nx,ny) && grid[ny][nx]===CRATE) pushCrate(p,nx,ny,dx,dy);
           if(passable(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir;
             p._stepSeq=p.inSeq; p.pressSteps++;                                  // which press this step belongs to
             if(p.inTap){ p.inHeld=[]; p.inTap=false; p._doneSeq=p.inSeq; } } }   // a tap buys one step
@@ -333,9 +379,8 @@ function makeWorld() {
         p.t += dt/(p.isHuman?moveDur(p):(botMoveDur(p)*(p.urgent?0.55:1)));
         if(p.t>=1){
           p.t=0; p.moving=false; p.tx=p.tox; p.ty=p.toy;
-          for(let i=powerups.length-1;i>=0;i--){ if(powerups[i].x===p.tx&&powerups[i].y===p.ty){ const t=powerups.splice(i,1)[0].type;
-            if(t===PU_RANGE) p.range=Math.min(MAX_RANGE,p.range+1); else if(t===PU_BUBBLE) p.maxBubbles=Math.min(MAX_BUBBLES,p.maxBubbles+1); else p.speed=Math.min(MAX_SPEED,p.speed+1);
-            events.push('power'); } }
+          for(let i=powerups.length-1;i>=0;i--){
+            if(powerups[i].x===p.tx&&powerups[i].y===p.ty) applyItem(p, powerups.splice(i,1)[0].type); }
         }
       }
     }
@@ -350,7 +395,7 @@ function makeWorld() {
         if(popper){ if(popper.owner && areAllies(popper.owner,p)){ p.trapped=false; p.trappedBy=null; p.struggle=0; events.push('free'); }
                     else { p.alive=false; events.push('pop'); } }
       }
-      else { p.trapped=true; p.trappedBy=hits[0].id; p.trapTimer=TRAP_TIME; p.struggle=0;
+      else { p.trapped=true; p.trappedBy=hits[0].id; p.trapTimer=TRAP_TIME; p.struggle=0; p.ride=null;
         p.escapeAt = p.isHuman ? 999 : ((Math.random()<p.botDiff.esc) ? (0.7+Math.random()*1.5) : 999);
         p.moving=false; p.tx=x; p.ty=y; events.push('trap'); }
     }
@@ -405,7 +450,7 @@ function makeWorld() {
       grid: grid.map(r=>r.join('')),
       players: players.map(p=>({slot:p.slot,tx:p.tx,ty:p.ty,fx:p.fx,fy:p.fy,tox:p.tox,toy:p.toy,
         t:p.t,moving:p.moving,dir:p.dir,alive:p.alive,trapped:p.trapped,trapTimer:p.trapTimer,struggle:p.struggle,
-        range:p.range,maxBubbles:p.maxBubbles,speed:p.speed,isHuman:p.isHuman,capColor:p.capColor,anim:p.anim,team:p.team,
+        range:p.range,maxBubbles:p.maxBubbles,speed:p.speed,ride:p.ride,isHuman:p.isHuman,capColor:p.capColor,anim:p.anim,team:p.team,
         md:(p.isHuman?moveDur(p):botMoveDur(p)),color:SKIN,colorLight:SKIN_LT})),
       bubbles: bubbles.map(b=>({x:b.x,y:b.y,fuse:b.fuse,range:b.range})),
       blasts: blasts.map(b=>({x:b.x,y:b.y,timer:b.timer})),
@@ -419,7 +464,7 @@ function makeWorld() {
 }
 
 const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, TAP_HOLD, SPEED_GAIN, MAX_SPEED, MAX_RANGE, MAX_BUBBLES,
-  FLOOR, WALL, BARREL, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES };
+  FLOOR, WALL, BARREL, CRATE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : null));

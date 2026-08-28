@@ -1,7 +1,7 @@
 // Network-first for the app shell so players always get the latest client
 // when online (prevents online version drift between devices); cache is just
 // the offline fallback for single-player.
-const CACHE = 'bnb-v34';
+const CACHE = 'bnb-v35';
 const ASSETS = ['./', './index.html', './game-core.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', e => {
