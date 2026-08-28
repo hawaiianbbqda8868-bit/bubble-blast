@@ -1,10 +1,18 @@
 // Movement input regression test.
 //
 // Drives the REAL client code (armDir / pressDir / releaseDir / effectiveDirArr /
-// netSendInput / loop, extracted verbatim from index.html) against the REAL
-// server sim (relay/game-core.js) ticked at the relay's 1/30 s, with input and
-// snapshots delayed by a simulated round trip — the same wiring relay/server.js
-// uses, including exactly which fields it forwards to setInput().
+// netSendInput / loop, extracted verbatim from index.html) against whichever sim
+// actually runs in that mode — and they are two different pieces of code:
+//
+//   single-player: index.html's OWN sim (update / reset / moveDur ... extracted
+//                  verbatim from the page), stepped at 60fps in the browser
+//   online:        relay/game-core.js, ticked at the relay's 1/30 s with input
+//                  and snapshots delayed by a simulated round trip — the same
+//                  wiring relay/server.js uses, including exactly which fields
+//                  it forwards to setInput()
+//
+// Testing single-player against the core instead is how a movement fix that
+// only landed in game-core.js once looked green while the game still misbehaved.
 //
 // Rules under test:
 //   1. one press of a direction -> exactly one tile, at any speed or latency
@@ -34,13 +42,47 @@ const CLIENT_SRC = ['armDir', 'pressDir', 'releaseDir', 'effectiveDirArr', 'netS
 
 const FRAME = 1000 / 60, SERVER_DT = 1 / 30;    // relay/server.js: DT = 1/30
 
+// index.html's single-player sim, lifted out of the page and given the handful
+// of globals it reads (no DOM, no canvas, no sound, and no bots in these
+// scenarios). Constants come from the core so the two can't silently diverge.
+const SIM_FNS = ['areAllies', 'bubbleAt', 'passable', 'tileOf', 'blastCells', 'buildMap',
+                 'makePlayer', 'botPlan', 'reset', 'placeBubble', 'burst',
+                 'speedGain', 'moveDur', 'botMoveDur', 'update'];
+function makeClientSim() {
+  const src = SIM_FNS.map(extract).join('\n');
+  return new Function('BB', `
+    'use strict';
+    const { COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, SPEED_GAIN, MAX_SPEED,
+            TAP_HOLD, MAX_RANGE, MAX_BUBBLES, FLOOR, WALL, BARREL, PALETTE, DIRV,
+            SKIN, SKIN_LT, SPAWNS, MAPS, THEMES, MIDX, MIDY } = BB;
+    const POWERUP_CHANCE = 0.36, BARREL_FILL = 0.78, PU_RANGE = 0, PU_BUBBLE = 1, PU_SPEED = 2;
+    const inB = (x, y) => x >= 0 && x < COLS && y >= 0 && y < ROWS, key = (x, y) => x + ',' + y;
+    const sfx = new Proxy({}, { get: () => () => {} });
+    let grid, players = [], bubbles = [], blasts = [], powerups = [], decor, theme, shipCenter;
+    let burstCounter = 0, diff = 'normal', teamMode = false;
+    let netRole = 'off', state = 'playing', mySlot = 0, deadShown = false;
+    const endGame = () => { state = 'over'; }, showResult = () => {};
+    const botAct = () => ({ dir: null, bubble: false });
+    ${src}
+    return { reset, update, get players(){ return players; }, get grid(){ return grid; } };
+  `)(BB);
+}
+
 // script: [[atMs, dir, holdMs], ...]
 function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FRAME, center = false }) {
   let clock = 0;
   const toServer = [], toClient = [];
-  const world = BB.makeWorld();
-  world.reset(['local', 'none', 'none', 'none'], ['#fff'], 'normal');
-  const w0 = world.read();
+  let world = null, sim, livePlayers, liveGrid;
+  if (online) {                                        // the relay runs game-core.js
+    world = BB.makeWorld();
+    world.reset(['local', 'none', 'none', 'none'], ['#fff'], 'normal');
+    sim = world; livePlayers = () => world.read().players; liveGrid = () => world.read().grid;
+  } else {                                             // single-player runs index.html's own sim
+    const c = makeClientSim();
+    c.reset(['local', 'none', 'none', 'none'], ['#fff']);
+    sim = c; livePlayers = () => c.players; liveGrid = () => c.grid;
+  }
+  const w0 = { grid: liveGrid(), players: livePlayers() };
   for (let y = 1; y < w0.grid.length - 1; y++)          // open the interior: no test should be wall-limited
     for (let x = 1; x < w0.grid[y].length - 1; x++) w0.grid[y][x] = BB.FLOOR;
   w0.players[0].speed = speed;
@@ -54,7 +96,7 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
     clock: 0, online, mySlot: 0,
     players: online ? world.snapshot().players : w0.players,
     send: o => { if (o && o.k === 'input') toServer.push([clock + rttMs / 2, o]); },
-    update: dt => world.update(dt),
+    update: dt => sim.update(dt),
   };
   const C = new Function('ctx', `
     const performance = { now: () => ctx.clock };
@@ -89,7 +131,7 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
       const [, kind, dir] = events[ei++];
       kind === 'down' ? C.pressDir(dir) : C.releaseDir(dir);
     }
-    if (!online) { ctx.players = world.read().players; C.setPlayers(ctx.players); C.loop(clock); }
+    if (!online) { ctx.players = livePlayers(); C.setPlayers(ctx.players); C.loop(clock); }
     else {
       C.loop(clock);
       while (toServer.length && toServer[0][0] <= clock) {
@@ -100,13 +142,13 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
       while (acc >= SERVER_DT) { acc -= SERVER_DT; world.update(SERVER_DT); toClient.push([clock + rttMs / 2, world.snapshot().players]); }
       while (toClient.length && toClient[0][0] <= clock) { ctx.players = toClient.shift()[1]; C.setPlayers(ctx.players); }
     }
-    const me = world.read().players[0];
+    const me = livePlayers()[0];
     if (me.tx !== prev.x || me.ty !== prev.y) {
       tiles++; if (clock > driftAfter) tilesAfterLastRelease++;
       prev = { x: me.tx, y: me.ty };
     }
   }
-  const me = world.read().players[0];
+  const me = livePlayers()[0];
   return { tiles, tilesAfterLastRelease, dx: me.tx - from.x, dy: me.ty - from.y };
 }
 

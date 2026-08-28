@@ -197,7 +197,7 @@
 <script src="game-core.js"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v33';
+const APP_VERSION = 'v34';
 const COLS = 19, ROWS = 17, TILE = 40;
 const FUSE = 2.0;        // bubble fuse seconds
 const BLAST_TIME = 0.5;  // water lasts
@@ -207,8 +207,13 @@ const BASE_MOVE = 0.20; // sec per tile (player) — steadier
 // Skates give diminishing returns: seconds shaved off a tile at each speed level.
 // A flat bonus made top speed 11 tiles/s, which is impossible to steer or stop;
 // this tops out at 0.138 s/tile (~7 tiles/s, 1.45x) while every pickup still helps.
-const SPEED_GAIN = [0, 0.020, 0.036, 0.048, 0.056, 0.062];
-const MAX_SPEED = SPEED_GAIN.length - 1;
+const SPEED_GAIN = BB.SPEED_GAIN;
+const MAX_SPEED = BB.MAX_SPEED;
+// index.html keeps its OWN copy of the sim for single-player (the server runs
+// game-core.js). Every movement rule below must therefore match the core's —
+// take the numbers from it rather than restating them here.
+const TAP_HOLD = BB.TAP_HOLD;                                  // press held this long = walk, shorter = one tile
+const MAX_RANGE = BB.MAX_RANGE, MAX_BUBBLES = BB.MAX_BUBBLES;
 const POWERUP_CHANCE = 0.36;
 const BARREL_FILL = 0.78;
 
@@ -332,6 +337,7 @@ function reset(controls, colors, teams){
     let cap=colors[i] || botPool[bp++ % botPool.length] || PALETTE[i%PALETTE.length];
     const p=makePlayer(s[0],s[1], !aiLike, cap, aiLike?botPlan(bi++%3):null);
     p.control=ctrl; p.slot=i; p.captain=false; p.inHeld=[]; p.inBomb=false; p._lastHeld=null;
+    p.inSeq=0; p._pressSeq=-1; p.pressT=0; p.pressSteps=0;
     p.team = teamMode ? (teams[i]==null?null:teams[i]) : null;
     if(ctrl==='none') p.alive=false;
     return p;
@@ -742,6 +748,13 @@ function update(dt){
   for(const p of players){
     if(!p.alive) continue;
     p.anim+=dt;
+    // How long the current press has lasted. inSeq identifies one press of one
+    // direction (loop() copies it from the input layer), so letting go and
+    // pressing again starts a fresh press even in the same direction.
+    if(p.control!=='ai'){
+      if(p.inSeq!==p._pressSeq){ p._pressSeq=p.inSeq; p.pressT=0; p.pressSteps=0; }
+      else p.pressT+=dt;
+    }
 
     if(p.trapped){
       p.trapTimer-=dt;
@@ -764,9 +777,12 @@ function update(dt){
         if(p.inBomb){ bubble=true; p.inBomb=false; }
       }
       if(bubble) placeBubble(p);
-      if(dir){
+      // One press = one tile. A second tile only once the press has lasted
+      // TAP_HOLD, so a slow thumb on the pad still moves exactly one tile.
+      const mayStep = p.control==='ai' || p.pressSteps===0 || p.pressT>=TAP_HOLD;
+      if(dir && mayStep){
         const [dx,dy]=DIRV[dir]; const nx=p.tx+dx, ny=p.ty+dy;
-        if(passable(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir; }
+        if(passable(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir; p.pressSteps++; }
       }
     }
     // advance movement
@@ -778,8 +794,8 @@ function update(dt){
         for(let i=powerups.length-1;i>=0;i--){
           if(powerups[i].x===p.tx && powerups[i].y===p.ty){
             const t=powerups.splice(i,1)[0].type;
-            if(t===PU_RANGE) p.range=Math.min(8,p.range+1);
-            else if(t===PU_BUBBLE) p.maxBubbles=Math.min(8,p.maxBubbles+1);
+            if(t===PU_RANGE) p.range=Math.min(MAX_RANGE,p.range+1);
+            else if(t===PU_BUBBLE) p.maxBubbles=Math.min(MAX_BUBBLES,p.maxBubbles+1);
             else p.speed=Math.min(MAX_SPEED,p.speed+1);
             if(p.isHuman) sfx.power();
           }
@@ -1068,7 +1084,7 @@ function render(){
   const me=players[mySlot]||players[0];
   if(me){
     const n=players.filter(p=>p.alive).length;
-    const txt=`💧${me.range}  🫧${me.maxBubbles}  👟${me.speed+1}   ·   Sailors ${n}`;
+    const txt=`💧${me.range}/${MAX_RANGE}  🫧${me.maxBubbles}/${MAX_BUBBLES}  👟${me.speed+1}/${MAX_SPEED+1}   ·   Sailors ${n}`;
     ctx.font='15px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     const w=ctx.measureText(txt).width+28, x=CAM.cssW/2-w/2, y=10;
     ctx.fillStyle='rgba(8,16,30,.55)'; roundRect(x,y,w,26,8); ctx.fill();

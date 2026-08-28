@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v33';
+const CORE_VERSION = 'v34';
 const COLS = 19, ROWS = 17;
 const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -26,6 +26,7 @@ const TAP_HOLD = 0.32;
 const SPEED_GAIN = [0, 0.020, 0.036, 0.048, 0.056, 0.062];
 const MAX_SPEED = SPEED_GAIN.length - 1;
 const POWERUP_CHANCE = 0.36, BARREL_FILL = 0.78;
+const MAX_RANGE = 8, MAX_BUBBLES = 8;   // pickup caps, shown in the HUD as x/max
 const FLOOR = 0, WALL = 1, BARREL = 2;
 const PU_RANGE = 0, PU_BUBBLE = 1, PU_SPEED = 2;
 const SKIN = '#fde7cf', SKIN_LT = '#fff8ee';
@@ -333,7 +334,7 @@ function makeWorld() {
         if(p.t>=1){
           p.t=0; p.moving=false; p.tx=p.tox; p.ty=p.toy;
           for(let i=powerups.length-1;i>=0;i--){ if(powerups[i].x===p.tx&&powerups[i].y===p.ty){ const t=powerups.splice(i,1)[0].type;
-            if(t===PU_RANGE) p.range=Math.min(8,p.range+1); else if(t===PU_BUBBLE) p.maxBubbles=Math.min(8,p.maxBubbles+1); else p.speed=Math.min(MAX_SPEED,p.speed+1);
+            if(t===PU_RANGE) p.range=Math.min(MAX_RANGE,p.range+1); else if(t===PU_BUBBLE) p.maxBubbles=Math.min(MAX_BUBBLES,p.maxBubbles+1); else p.speed=Math.min(MAX_SPEED,p.speed+1);
             events.push('power'); } }
         }
       }
@@ -417,7 +418,7 @@ function makeWorld() {
     get gameState(){ return gameState; }, get winnerSlot(){ return winnerSlot; } };
 }
 
-const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, TAP_HOLD, SPEED_GAIN, MAX_SPEED,
+const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, TAP_HOLD, SPEED_GAIN, MAX_SPEED, MAX_RANGE, MAX_BUBBLES,
   FLOOR, WALL, BARREL, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;
