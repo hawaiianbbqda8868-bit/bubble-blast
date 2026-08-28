@@ -100,3 +100,47 @@ The ride joins the stat line when you have one:
 
 `tools/movement-test.js` keeps its single-player rows on the core once the page
 has no sim of its own, plus the one-sim guard.
+
+---
+
+# 半身位 (half-body positioning)
+
+Added the same day, on the same sim.
+
+## The control
+
+A ½ button sits above the pad (Shift on a keyboard). While it is lit every tap
+moves HALF a tile, so the sailor can stop on the line between two tiles. An
+ordinary tap from a line walks to the next tile centre, so you can always square
+yourself up again. Standing on a line means standing in two tiles — or four, on
+a corner — and every one of them has to be clear.
+
+## The rule
+
+One rule, `DMG_OFF = 0.18`: the sailor leans the way he last walked, and always
+a little downwards. His bubble drops in the tile he leant AWAY from, and a blast
+catches him only when that leaning point is inside its tile.
+
+That produces the three classic cases:
+
+- **竖半身** — on a vertical line his bubble goes into the tile he came from and
+  cannot reach him; the far side still can, so which way you lean is the skill.
+  Step on from the left for 左半身位, from the right for 右半身位.
+- **横半身** — on a horizontal line the tile ABOVE misses him however he got
+  there, and the one BELOW never does: the downward half of the lean does not
+  flip, which is exactly why there is no 下半身.
+- **完美点** — on a corner his weight lands on the diagonal, and no blast cross
+  covers a diagonal. He can stand still and keep dropping bubbles.
+
+Nothing changes for a sailor on a tile centre: the lean is 0.18 of a tile, well
+inside his own square, so his own tile catches him and nothing else does.
+
+Bots never half-step and stay on tile centres.
+
+## Tests
+
+`tools/halfbody-test.js`: half-steps land on the line and normal steps come back
+off it, both 竖半身 leans and what each is safe from, 上半身 working from either
+approach while 下半身 never does, 完美点 surviving three bubbles without moving,
+half-steps refusing a wall or a barrel, a 300ms half-press still being one move,
+and bots staying on the grid.

@@ -78,6 +78,8 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
     let state = 'playing', mySlot = ctx.mySlot, teamMode = false;
     let netRole = ctx.online ? 'host' : 'off';
     const world = ctx.online ? null : ctx.world;      // startGame() makes this for single-player
+    let halfMode = false, halfKey = false;            // the ½ button, off for these cases
+    const halfOn = () => halfMode || halfKey;
     const sfx = new Proxy({}, { get: () => () => {} });
     const endGame = () => { state = 'over'; };
     const ws = { readyState: 1 };
@@ -86,7 +88,8 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
     const clientAdvance = () => {};
     const render = () => {};
     ${CLIENT_SRC}
-    return { loop, pressDir, releaseDir, syncWorld, setPlayers: p => { players = p; } };
+    return { loop, pressDir, releaseDir, syncWorld, setHalf: v => { halfMode = v; },
+             setPlayers: p => { players = p; } };
   `)(ctx);
   if (!online) C.syncWorld();                          // startGame() does this before the first frame
 
@@ -202,6 +205,17 @@ for (const online of [false, true]) {
   check(`${online ? 'online' : 'single-player'}, 1500ms hold`, r.tiles >= 5 && r.tiles <= 8, `${r.tiles} tiles (want 5-8)`);
 }
 
+console.log('\n8. One sim, one version\n');
+{
+  const SW = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
+  const app  = (HTML.match(/APP_VERSION = '(v\d+)'/) || [])[1];
+  const core = BB.CORE_VERSION;
+  const src  = (HTML.match(/game-core\.js\?(v\d+)/) || [])[1];
+  const sw   = (SW.match(/VER = '(v\d+)'/) || [])[1];
+  check('client, core, script tag and cache all agree',
+    app && app === core && app === src && app === sw,
+    `page ${app}, core ${core}, <script> ${src}, sw ${sw}`);
+}
 console.log('\n8. One sim: the page must not grow a copy of its own\n');
 for (const fn of ['update', 'reset', 'botAct', 'placeBubble', 'moveDur']) {
   check(`index.html has no ${fn}() of its own`, !new RegExp('\\nfunction ' + fn + '\\s*\\(').test(HTML),

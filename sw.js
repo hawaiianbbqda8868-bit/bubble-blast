@@ -1,8 +1,12 @@
 // Network-first for the app shell so players always get the latest client
 // when online (prevents online version drift between devices); cache is just
 // the offline fallback for single-player.
-const CACHE = 'bnb-v35';
-const ASSETS = ['./', './index.html', './game-core.js', './manifest.webmanifest', './icon.svg'];
+const VER = 'v36';                       // keep in step with APP_VERSION in index.html
+const CACHE = 'bnb-' + VER;
+// game-core.js carries the version in its URL: a stale cached copy can then
+// never be served to a fresh index.html, which is how a v36 page ended up
+// running a v35 sim.
+const ASSETS = ['./', './index.html', './game-core.js?' + VER, './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', e => {
   // cache:'reload' on every asset too: GitHub Pages' max-age=600 could otherwise

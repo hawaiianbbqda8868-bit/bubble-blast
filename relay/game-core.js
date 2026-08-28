@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v35';
+const CORE_VERSION = 'v36';
 const COLS = 19, ROWS = 17;
 const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -20,6 +20,13 @@ const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOV
 // a third with skates on, at 0.138s per tile). Holding past this walks on, so
 // crossing the map is still one long press.
 const TAP_HOLD = 0.32;
+// 半身位. A sailor can stop ON the line between two tiles (a half-step), and
+// his damage point sits a little BELOW his centre — a blast catches him only
+// when that point is inside its tile. That one rule gives all three cases:
+//   竖半身  on a vertical line, neither neighbouring column can reach him
+//   横半身  on a horizontal line, the tile ABOVE misses, the one BELOW does not
+//   完美点  on a corner, he can stand still and keep dropping bubbles
+const DMG_OFF = 0.18;
 // Skates give diminishing returns: seconds shaved off a tile at each speed level.
 // A flat bonus made top speed 11 tiles/s, which is impossible to steer or stop;
 // this tops out at 0.138 s/tile (~7 tiles/s, 1.45x) while every pickup still helps.
@@ -95,7 +102,27 @@ function makeWorld() {
   function bubbleAt(x,y){ return bubbles.find(b=>b.x===x&&b.y===y); }
   function passable(x,y){ return inB(x,y) && grid[y][x]===FLOOR && !bubbleAt(x,y); }
   function areAllies(a,b){ return teamMode && a && b && a.team!=null && a.team===b.team; }
-  function tileOf(p){ if(!p.moving) return {x:p.tx,y:p.ty}; return p.t<0.5?{x:p.fx,y:p.fy}:{x:p.tox,y:p.toy}; }
+  // Where he actually is, which can be half way between two tiles.
+  function posOf(p){ return p.moving ? {x:p.fx+(p.tox-p.fx)*p.t, y:p.fy+(p.toy-p.fy)*p.t} : {x:p.tx,y:p.ty}; }
+  // He leans the way he last walked, and always a little downwards. Everything
+  // about 半身位 falls out of that lean:
+  //   his bubble goes into the tile he leant AWAY from — the one he came from
+  //   a blast there cannot reach him, because his weight is in the next tile
+  //   the downward half never flips, so there is no 下半身
+  //   on a corner his weight lands on the diagonal, which no blast cross covers
+  function lean(p){ return { x: DMG_OFF*(p.faceX||1), y: DMG_OFF }; }
+  function dmgPoint(p){ const q=posOf(p), l=lean(p); return {x:q.x+l.x, y:q.y+l.y}; }
+  // The tile he counts as being in — where his bubble drops, and what the AI sees.
+  function tileOf(p){ const q=posOf(p), l=lean(p); return {x:Math.round(q.x-l.x), y:Math.round(q.y-l.y)}; }
+  // Standing on a line means standing in two tiles (or four, on a corner):
+  // every one of them has to be clear.
+  function canStand(x,y){
+    const xs = x%1 ? [Math.floor(x),Math.ceil(x)] : [x];
+    const ys = y%1 ? [Math.floor(y),Math.ceil(y)] : [y];
+    for(const X of xs) for(const Y of ys) if(!passable(X,Y)) return false;
+    return true;
+  }
+  function inBlast(q,bl){ return Math.abs(q.x-bl.x)<0.5 && Math.abs(q.y-bl.y)<0.5; }
   function blastCells(x,y,range){
     const cells=[{x,y}], dirs=[[1,0],[-1,0],[0,1],[0,-1]];
     for(const [dx,dy] of dirs){
@@ -156,7 +183,7 @@ function makeWorld() {
       const aiLike=(ctrl==='ai'||ctrl==='none');
       const p=makePlayer(s[0],s[1], !aiLike, cap, aiLike?botPlan(bi++%3):null);
       p.control=ctrl; p.slot=i; p.captain=false; p.inHeld=[]; p.inBomb=false; p._lastHeld=null;
-      p.inTap=false; p.tapTtl=0; p.inSeq=0; p._stepSeq=0; p._doneSeq=0;
+      p.inTap=false; p.tapTtl=0; p.inSeq=0; p._stepSeq=0; p._doneSeq=0; p.inHalf=false; p.faceX=1;
       p._pressSeq=-1; p.pressT=0; p.pressSteps=0;
       p.team = teamMode ? (teams[i]==null?null:teams[i]) : null;
       if(ctrl==='none') p.alive=false;   // slot not in this match (player-count < 4)
@@ -368,10 +395,19 @@ function makeWorld() {
         // TAP_HOLD — and never off a tap the player has already let go of
         // (p.inTap), whose direction the client is only replaying.
         const mayStep = p.control==='ai' || p.pressSteps===0 || (p.pressT>=TAP_HOLD && !p.inTap);
-        if(dir && mayStep){ const [dx,dy]=DIRV[dir]; const nx=p.tx+dx, ny=p.ty+dy;
-          // bots treat crates as walls: they bomb them, they never shove them
-          if(p.control!=='ai' && inB(nx,ny) && grid[ny][nx]===CRATE) pushCrate(p,nx,ny,dx,dy);
-          if(passable(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir;
+        if(dir && mayStep){ const [dx,dy]=DIRV[dir];
+          const half = p.control!=='ai' && !!p.inHalf;
+          const off = (dx ? p.tx : p.ty) % 1;                                    // already on a line?
+          // half = stop on the next line; otherwise walk to the next tile
+          // centre, which from a line is only half a tile — so you can always
+          // square yourself up again with an ordinary tap.
+          const len = (half || off) ? 0.5 : 1;
+          const nx = p.tx+dx*len, ny = p.ty+dy*len;
+          // shoving needs a whole tile ahead of you, so only square-on from a centre
+          const cx = p.tx+dx, cy = p.ty+dy;
+          if(!half && !off && p.control!=='ai' && inB(cx,cy) && grid[cy][cx]===CRATE) pushCrate(p,cx,cy,dx,dy);
+          if(canStand(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir;
+            if(dx) p.faceX=dx;                                                   // which way he leans
             p._stepSeq=p.inSeq; p.pressSteps++;                                  // which press this step belongs to
             if(p.inTap){ p.inHeld=[]; p.inTap=false; p._doneSeq=p.inSeq; } } }   // a tap buys one step
       }
@@ -379,16 +415,17 @@ function makeWorld() {
         p.t += dt/(p.isHuman?moveDur(p):(botMoveDur(p)*(p.urgent?0.55:1)));
         if(p.t>=1){
           p.t=0; p.moving=false; p.tx=p.tox; p.ty=p.toy;
-          for(let i=powerups.length-1;i>=0;i--){
-            if(powerups[i].x===p.tx&&powerups[i].y===p.ty) applyItem(p, powerups.splice(i,1)[0].type); }
+          for(let i=powerups.length-1;i>=0;i--){        // on a line he covers two tiles
+            const pu=powerups[i];
+            if(Math.abs(pu.x-p.tx)<0.75 && Math.abs(pu.y-p.ty)<0.75) applyItem(p, powerups.splice(i,1)[0].type); }
         }
       }
     }
     for(const p of players){
       if(!p.alive) continue;
-      const {x,y}=tileOf(p);
+      const q=dmgPoint(p);
       // a bubble traps everyone incl. its owner — but bots ignore their OWN blast so the AI doesn't suicide
-      const hits=blasts.filter(bl=>bl.x===x&&bl.y===y&&(p.isHuman||bl.owner!==p));
+      const hits=blasts.filter(bl=>inBlast(q,bl)&&(p.isHuman||bl.owner!==p));
       if(!hits.length) continue;
       if(p.trapped){
         const popper=hits.find(h=>h.id!==p.trappedBy);
@@ -397,15 +434,16 @@ function makeWorld() {
       }
       else { p.trapped=true; p.trappedBy=hits[0].id; p.trapTimer=TRAP_TIME; p.struggle=0; p.ride=null;
         p.escapeAt = p.isHuman ? 999 : ((Math.random()<p.botDiff.esc) ? (0.7+Math.random()*1.5) : 999);
-        p.moving=false; p.tx=x; p.ty=y; events.push('trap'); }
+        if(p.moving){ const t=tileOf(p); p.tx=t.x; p.ty=t.y; }   // caught mid-step: settle on a tile
+        p.moving=false; events.push('trap'); }
     }
     // contact pop: a sailor standing on a trapped sailor pops the bubble (enemy=out, teammate=freed)
     for(const pt of players){
       if(!pt.alive || !pt.trapped) continue;
       for(const q of players){
         if(q===pt || !q.alive || q.trapped) continue;
-        const tq=tileOf(q);
-        if(tq.x===pt.tx && tq.y===pt.ty){
+        const tq=posOf(q);
+        if(Math.abs(tq.x-pt.tx)<0.5 && Math.abs(tq.y-pt.ty)<0.5){
           if(areAllies(q,pt)){ pt.trapped=false; pt.trappedBy=null; pt.struggle=0; events.push('free'); }
           else { pt.alive=false; events.push('pop'); }
           break;
@@ -443,13 +481,14 @@ function makeWorld() {
     } else {
       p.inHeld = inp.dir?[inp.dir]:[]; p.inSeq=seq; p.inTap=false;
     }
+    p.inHalf = !!inp.half;                        // the ½ button, held per press
     if(inp.bomb) p.inBomb=true; p._lastHeld=inp.dir||null;
   }
   function snapshot(){
     return { gs:gameState, win:winnerSlot, ev:events, tm:teamMode, wt:winnerTeam,
       grid: grid.map(r=>r.join('')),
       players: players.map(p=>({slot:p.slot,tx:p.tx,ty:p.ty,fx:p.fx,fy:p.fy,tox:p.tox,toy:p.toy,
-        t:p.t,moving:p.moving,dir:p.dir,alive:p.alive,trapped:p.trapped,trapTimer:p.trapTimer,struggle:p.struggle,
+        t:p.t,moving:p.moving,dir:p.dir,faceX:p.faceX,alive:p.alive,trapped:p.trapped,trapTimer:p.trapTimer,struggle:p.struggle,
         range:p.range,maxBubbles:p.maxBubbles,speed:p.speed,ride:p.ride,isHuman:p.isHuman,capColor:p.capColor,anim:p.anim,team:p.team,
         md:(p.isHuman?moveDur(p):botMoveDur(p)),color:SKIN,colorLight:SKIN_LT})),
       bubbles: bubbles.map(b=>({x:b.x,y:b.y,fuse:b.fuse,range:b.range})),
@@ -463,7 +502,7 @@ function makeWorld() {
     get gameState(){ return gameState; }, get winnerSlot(){ return winnerSlot; } };
 }
 
-const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, TAP_HOLD, SPEED_GAIN, MAX_SPEED, MAX_RANGE, MAX_BUBBLES,
+const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, TAP_HOLD, DMG_OFF, SPEED_GAIN, MAX_SPEED, MAX_RANGE, MAX_BUBBLES,
   FLOOR, WALL, BARREL, CRATE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;
