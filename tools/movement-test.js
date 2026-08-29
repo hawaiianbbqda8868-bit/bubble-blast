@@ -93,6 +93,8 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
   `)(ctx);
   if (!online) C.syncWorld();                          // startGame() does this before the first frame
 
+  // is a direction being held at time t, per the script?
+  const heldNow = t => script.some(([at, , hold]) => t >= 200 + at && t < 200 + at + hold);
   const events = script
     .flatMap(([at, dir, hold]) => [[200 + at, 'down', dir], [200 + at + hold, 'up', dir]])
     .sort((a, b) => a[0] - b[0]);
@@ -104,6 +106,7 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
   const driftAfter = lastRelease + rttMs + settle * 1000 * 1.5;
   let ei = 0, acc = 0, tiles = 0, tilesAfterLastRelease = 0;  // ...AfterLastRelease = drift
   const landings = [];                                        // when each tile arrived
+  let stillMs = 0, worstStill = 0;                            // longest stand-still while a key is down
   let prev = { x: from.x, y: from.y };
 
   for (; clock < runMs; clock += frameMs) {
@@ -124,6 +127,10 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
       while (toClient.length && toClient[0][0] <= clock) { ctx.players = toClient.shift()[1]; C.setPlayers(ctx.players); }
     }
     const me = livePlayers()[0];
+    if (heldNow(clock)) {                                     // "it felt paused" = this going up
+      if (me.moving) stillMs = 0;
+      else { stillMs += frameMs; worstStill = Math.max(worstStill, stillMs); }
+    } else stillMs = 0;
     if (me.tx !== prev.x || me.ty !== prev.y) {
       tiles++; if (clock > driftAfter) tilesAfterLastRelease++;
       landings.push(Math.round(clock - 200));         // ms since the first press
@@ -131,7 +138,7 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
     }
   }
   const me = livePlayers()[0];
-  return { tiles, tilesAfterLastRelease, landings, dx: me.tx - from.x, dy: me.ty - from.y };
+  return { tiles, tilesAfterLastRelease, landings, worstStill, dx: me.tx - from.x, dy: me.ty - from.y };
 }
 
 let failed = 0;
@@ -228,20 +235,24 @@ for (const fn of ['update', 'reset', 'botAct', 'placeBubble', 'moveDur']) {
     'single-player and the relay must run the same game-core.js');
 }
 
-console.log('\n9. Holding walks smoothly — no stutter once he is going\n');
+console.log('\n9. Holding walks smoothly — he is never left standing\n');
 // The tap rule used to make the second tile wait for TAP_HOLD, which put a
-// 133ms dead stop in the middle of every walk. The first tile is paced by the
-// press; every tile after it has to arrive on time.
+// 133ms dead stop in the middle of every walk, and pacing the first tile by the
+// press instead made that tile feel slow. He now leans into the next tile while
+// the press is still being judged, so while you hold a direction he is moving.
 for (const speed of [0, 3, 5]) {
   const tile = (BB.BASE_MOVE - BB.SPEED_GAIN[speed]) * 1000;
   for (const online of [false, true]) {
     const r = play({ online, rttMs: online ? 60 : 0, speed, script: [[0, 'right', 1500]], runMs: 2500 });
-    const gaps = r.landings.slice(1).map((v, i) => v - r.landings[i]).slice(1);   // skip the first tile
-    const worst = gaps.length ? Math.max(...gaps) : Infinity;
-    check(`${online ? 'online' : 'single-player'}, speed ${speed}`, worst <= tile * 1.25,
-      `worst gap ${worst}ms (a tile is ${Math.round(tile)}ms)`);
+    check(`${online ? 'online' : 'single-player'}, speed ${speed}: no stall`, r.worstStill <= 50,
+      `stood still for ${Math.round(r.worstStill)}ms at most`);
+    // online the press still has to reach the server and land on a 30Hz tick
+    const budget = tile * 1.25 + (online ? 60 / 2 + 1000 / 30 : 0);
+    check(`${online ? 'online' : 'single-player'}, speed ${speed}: first tile at full speed`,
+      r.landings[0] <= budget, `first tile took ${r.landings[0]}ms (a tile is ${Math.round(tile)}ms)`);
   }
 }
+
 
 console.log(failed ? `\n${failed} FAILING CASE(S)` : '\nall cases pass');
 process.exit(failed ? 1 : 0);

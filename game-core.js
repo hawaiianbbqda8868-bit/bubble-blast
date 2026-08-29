@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v37';
+const CORE_VERSION = 'v38';
 const COLS = 19, ROWS = 17;
 const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -19,12 +19,15 @@ const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOV
 // thumb on the D-pad rests ~250ms, which used to bleed into a second tile (and
 // a third with skates on, at 0.138s per tile). Holding past this walks on, so
 // crossing the map is still one long press.
-// The first tile of a press is paced by the press itself: while the button is
-// still down that tile takes TAP_HOLD — about as long as a thumb rests on a pad
-// — so "tap or walk?" is answered exactly when the tile ends. Hold, and the
-// next tile starts the same instant at full speed, with no stutter; let go, and
-// the tile finishes at full speed and he stops on it. One press, one tile.
+// How long a press has to last before it counts as walking rather than a tap —
+// about as long as a thumb rests on a pad. The first tile of a press always
+// runs at full speed; when it lands and the button is still down but the press
+// is still this young, he LEANS into the next tile at TENTATIVE_SLOW pace
+// instead of stopping dead. Hold, and he commits and speeds up; let go, and he
+// leans back where he came from. So a press is one tile, he is never standing
+// still while you are holding a direction, and the first tile is never slow.
 const TAP_HOLD = 0.32;
+const LEAN_MAX = 0.25;              // he never leans more than a quarter of a tile in
 // 半身位. A sailor can stop ON the line between two tiles (a half-step), and
 // his damage point sits a little BELOW his centre — a blast catches him only
 // when that point is inside its tile. That one rule gives all three cases:
@@ -161,7 +164,7 @@ function makeWorld() {
   function makePlayer(tx,ty,isHuman,capColor,botDiff){
     return { tx,ty, fx:tx,fy:ty, tox:tx,toy:ty, t:0, moving:false, dir:'down',
       isHuman, color:SKIN, colorLight:SKIN_LT, capColor:capColor||'#1a1a1f', alive:true,
-      range:1, maxBubbles:1, active:0, speed:0, ride:null, stepLen:1,
+      range:1, maxBubbles:1, active:0, speed:0, ride:null, stepLen:1, tentative:false,
       trapped:false, trappedBy:null, trapTimer:0, struggle:0, escapeAt:0,
       botDiff, think:0, anim:0, target:null, targetTtl:0 };
   }
@@ -337,10 +340,14 @@ function makeWorld() {
   // first tile of a press, which waits out the thumb (see TAP_HOLD).
   function stepDur(p){
     const base = (p.isHuman ? moveDur(p) : botMoveDur(p)*(p.urgent?0.55:1)) * (p.stepLen||1);
-    if(p.control==='ai' || p.pressSteps>1) return base;
-    const stillDown = p.inHeld && p.inHeld.length && !p.inTap;
-    return (stillDown && base < TAP_HOLD) ? TAP_HOLD : base;
+    if(!p.tentative) return base;                    // walking, and leaning back, run at full speed
+    // The lean has to last until the press is old enough to judge, and cover no
+    // more than LEAN_MAX of a tile in that time — so it looks the same whether
+    // he is on foot, on skates or in a car.
+    const window = Math.max(0.05, TAP_HOLD - base);
+    return Math.max(base, window/LEAN_MAX);
   }
+  const stillPressing = p => p.inHeld && p.inHeld.length && !p.inTap && p.inHeld[p.inHeld.length-1]===p.dir;
 
   // Walking into a crate shoves it one tile and you take its place — but only
   // into empty floor, so a crate can never bury a sailor, a bubble or an item.
@@ -406,11 +413,14 @@ function makeWorld() {
         if(p.control==='ai'){ p.think-=dt; if(p.think<=0){ p.think=0.05; const a=botAct(p,danger); dir=a.dir; bubble=a.bubble; p._dir=dir; } else dir=p._dir; }
         else { dir=(p.inHeld&&p.inHeld.length)?p.inHeld[p.inHeld.length-1]:null; if(p.inBomb){ bubble=true; p.inBomb=false; } }
         if(bubble) placeBubble(p);
-        // One press = one tile. A second tile only once the press has lasted
-        // TAP_HOLD — and never off a tap the player has already let go of
-        // (p.inTap), whose direction the client is only replaying.
-        const mayStep = p.control==='ai' || p.pressSteps===0 || (p.pressT>=TAP_HOLD && !p.inTap);
-        if(dir && mayStep){ const [dx,dy]=DIRV[dir];
+        // One press = one tile. The first tile of a press always goes; a second
+        // one only once the press has lasted TAP_HOLD, and never off a tap the
+        // player has already let go of (p.inTap), whose direction the client is
+        // only replaying. In between he may LEAN into the next tile — slowly,
+        // and ready to lean back — so that holding never looks like a stall.
+        const committed = p.control==='ai' || p.pressSteps===0 || (p.pressT>=TAP_HOLD && !p.inTap);
+        const leaning = !committed && p.control!=='ai' && p.pressSteps>0 && stillPressing(p);
+        if(dir && (committed || leaning)){ const [dx,dy]=DIRV[dir];
           const half = p.control!=='ai' && !!p.inHalf;
           const off = (dx ? p.tx : p.ty) % 1;                                    // already on a line?
           // half = stop on the next line; otherwise walk to the next tile
@@ -420,14 +430,22 @@ function makeWorld() {
           const nx = p.tx+dx*len, ny = p.ty+dy*len;
           // shoving needs a whole tile ahead of you, so only square-on from a centre
           const cx = p.tx+dx, cy = p.ty+dy;
-          if(!half && !off && p.control!=='ai' && inB(cx,cy) && grid[cy][cx]===CRATE) pushCrate(p,cx,cy,dx,dy);
+          if(!half && !off && !leaning && p.control!=='ai' && inB(cx,cy) && grid[cy][cx]===CRATE) pushCrate(p,cx,cy,dx,dy);
           if(canStand(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir;
-            p.stepLen=len;
+            p.stepLen=len; p.tentative=leaning;
             if(dx) p.faceX=dx;                                                   // which way he leans
             p._stepSeq=p.inSeq; p.pressSteps++;                                  // which press this step belongs to
             if(p.inTap){ p.inHeld=[]; p.inTap=false; p._doneSeq=p.inSeq; } } }   // a tap buys one step
       }
       if(p.moving){
+        if(p.tentative){                            // commit, or lean back
+          if(p.pressT>=TAP_HOLD && stillPressing(p)) p.tentative=false;
+          else if(!stillPressing(p)){
+            const bx=p.fx, by=p.fy;                 // walk the step backwards from where he got to
+            p.fx=p.tox; p.fy=p.toy; p.tox=bx; p.toy=by;
+            p.t=1-p.t; p.tentative=false; p.pressSteps--;
+          }
+        }
         p.t += dt/stepDur(p);
         if(p.t>=1){
           p.t=0; p.moving=false; p.tx=p.tox; p.ty=p.toy;
