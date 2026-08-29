@@ -1,7 +1,7 @@
 // Network-first for the app shell so players always get the latest client
 // when online (prevents online version drift between devices); cache is just
 // the offline fallback for single-player.
-const VER = 'v38';                       // keep in step with APP_VERSION in index.html
+const VER = 'v39';                       // keep in step with APP_VERSION in index.html
 const CACHE = 'bnb-' + VER;
 // game-core.js carries the version in its URL: a stale cached copy can then
 // never be served to a fresh index.html, which is how a v36 page ended up

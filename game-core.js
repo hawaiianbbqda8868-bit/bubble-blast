@@ -11,9 +11,9 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v38';
+const CORE_VERSION = 'v39';
 const COLS = 19, ROWS = 17;
-const FUSE = 2.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
+const FUSE = 3.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
 // shorter is a tap and buys exactly one tile, however long the tile took — a
 // thumb on the D-pad rests ~250ms, which used to bleed into a second tile (and

@@ -201,10 +201,10 @@
   <button class="smallbtn" id="overMenu">← Menu</button>
 </div>
 
-<script src="game-core.js?v38"></script>
+<script src="game-core.js?v39"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v38';
+const APP_VERSION = 'v39';
 // Last line of defence against a fresh page running an older sim: game-core.js
 // is versioned in its URL, but if the two ever disagree, throw the caches away
 // and reload once rather than play by two different sets of rules.
@@ -220,10 +220,11 @@ if(BB.CORE_VERSION !== APP_VERSION){
   }catch(e){}
 }
 const COLS = 19, ROWS = 17, TILE = 40;
-const FUSE = 2.0;        // bubble fuse seconds
-const BLAST_TIME = 0.5;  // water lasts
-const TRAP_TIME = 3.0;   // time inside the bubble before it pops (= death)
-const ESCAPE_NEED = 1.0; // how much "wiggle" breaks you free in time
+// Timings live in game-core.js — the renderer only draws to them.
+const FUSE = BB.FUSE;               // bubble fuse seconds
+const BLAST_TIME = BB.BLAST_TIME;   // water lasts
+const TRAP_TIME = BB.TRAP_TIME;     // time inside the bubble before it pops (= death)
+const ESCAPE_NEED = BB.ESCAPE_NEED; // how much "wiggle" breaks you free in time
 // Skates give diminishing returns: seconds shaved off a tile at each speed level.
 // A flat bonus made top speed 11 tiles/s, which is impossible to steer or stop;
 // this tops out at 0.138 s/tile (~7 tiles/s, 1.45x) while every pickup still helps.

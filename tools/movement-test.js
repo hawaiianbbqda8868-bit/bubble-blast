@@ -230,6 +230,10 @@ console.log('\n8. One sim, one version\n');
     `page ${app}, core ${core}, <script> ${src}, sw ${sw}`);
 }
 console.log('\n8. One sim: the page must not grow a copy of its own\n');
+for (const k of ['FUSE', 'BLAST_TIME', 'TRAP_TIME', 'ESCAPE_NEED', 'BASE_MOVE', 'MAX_SPEED']) {
+  check(`index.html does not restate ${k}`, !new RegExp('const ' + k + ' = [\\d.]').test(HTML),
+    'game rules belong to game-core.js; the page reads them from BB');
+}
 for (const fn of ['update', 'reset', 'botAct', 'placeBubble', 'moveDur']) {
   check(`index.html has no ${fn}() of its own`, !new RegExp('\\nfunction ' + fn + '\\s*\\(').test(HTML),
     'single-player and the relay must run the same game-core.js');
