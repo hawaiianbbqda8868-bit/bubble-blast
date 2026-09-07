@@ -78,6 +78,7 @@ async function serverTests(){
     console.log('server: the host picks the map, nobody rolls one');
     host2.send({ k:'setmap', map:3 }); const [lb] = await Promise.all([host2.next('lobby'), tabB.next('lobby')]);
     check('setmap shows in the lobby for everyone', lb.map === 3 && tabB.last('lobby') && tabB.last('lobby').map === 3, JSON.stringify([lb.map, (tabB.last('lobby')||{}).map]));
+    for(const c of [host2, tabA2, tabB]) c.send({ k:'setready', ready:true }); await sleep(150);   // both must press 准备 first
     host2.send({ k:'start', diff:'easy', bots:2, teams:false, map:3 }); const st = await tabB.next('start');
     const BB = require(path.join(ROOT, 'relay/game-core.js'));
     check('the game starts on that map', st.map === 3 && st.theme === BB.MAPS[3].theme, JSON.stringify([st.map, st.theme]));
@@ -86,6 +87,34 @@ async function serverTests(){
     let fixed = true; for(let i=0;i<8;i++){ const w = BB.makeWorld(); w.reset(); fixed = fixed && w.mapMsg().map === 0; }
     check('core: no map given -> the first map, not a random one', fixed);
     for(const c of [host, host2, tabA, tabA2, tabB]) try{ c.ws.terminate(); }catch(e){}
+
+    console.log('server: waiting room — profiles, READY, and a side of your own');
+    const ann = client(url); await ann.open(); ann.send({ k:'create', cid:'ANN', color:'#f00', bots:2, name:'Ann', wins:5 }); const ja1 = await ann.next('joined');
+    check('alone with bots: START needs no READY', await (async () => { ann.send({ k:'start' }); const m = await Promise.race([ann.next('start'), ann.next('notready')]); return m.k === 'start'; })());
+    const bea = client(url); await bea.open(); bea.send({ k:'create', cid:'BEA', color:'#0f0', bots:2, name:'Bea', wins:0 }); const jb = await bea.next('joined');
+    const cal = client(url); await cal.open(); cal.send({ k:'join', cid:'CAL', code:jb.code, name:'<Cal>', wins:12 }); await cal.next('joined'); await sleep(120);
+    let lb2 = bea.last('lobby');
+    check('lobby lists every seat with name, rank input and host flag', lb2.players.length === 2 && lb2.players[0].name === 'Bea' && lb2.players[0].host && lb2.players[1].name === '<Cal>' && lb2.players[1].wins === 12 && !lb2.players[1].host, JSON.stringify(lb2.players));
+    check('nobody is ready at first', lb2.players.every(p => !p.ready));
+    bea.send({ k:'start' }); let nr = await bea.next('notready');
+    check('two humans: START refused until both READY', nr.waiting.length === 2, JSON.stringify(nr.waiting));
+    bea.send({ k:'setready', ready:true }); await bea.next('lobby');
+    bea.send({ k:'start' }); nr = await bea.next('notready');
+    check('host ready alone is not enough', nr.waiting.join() === '<Cal>', JSON.stringify(nr.waiting));
+    check('joiner sees who is ready', cal.last('lobby').players.find(p => p.name === 'Bea').ready === true);
+    bea.send({ k:'setopts', teams:true, diff:'hard' }); await Promise.all([bea.next('lobby'), cal.next('lobby')]);
+    lb2 = cal.last('lobby');
+    check('teams on: settings reach the joiner, sides dealt evenly', lb2.teams === true && lb2.diff === 'hard' && lb2.players.map(p => p.team).sort().join() === '0,1', JSON.stringify(lb2));
+    cal.send({ k:'setteam', team:lb2.players[0].team }); await Promise.all([bea.next('lobby'), cal.next('lobby')]);
+    lb2 = cal.last('lobby');
+    check('a player can pick the same side as the host', lb2.players[0].team === lb2.players[1].team, JSON.stringify(lb2.players.map(p => p.team)));
+    cal.send({ k:'setready', ready:true }); await bea.next('lobby');
+    bea.send({ k:'start' }); const st2 = await cal.next('start');
+    const snap = await cal.next('state');
+    const humans = snap.players.filter(p => p.isHuman && p.alive), bots = snap.players.filter(p => !p.isHuman && p.alive);
+    check('game starts once everyone is READY', !!st2 && humans.length === 2);
+    check('humans keep their chosen side; bots fill the other', humans.every(p => p.team === humans[0].team) && bots.length === 2 && bots.every(p => p.team !== humans[0].team), JSON.stringify(snap.players.filter(p => p.alive).map(p => [p.isHuman, p.team])));
+    for(const c of [ann, bea, cal]) try{ c.ws.terminate(); }catch(e){}
   } catch(e){ check('server tests ran without error', false, e.message); }
   srv.kill();
 }
@@ -101,12 +130,20 @@ function clientTests(){
   check('single-player starts on the picked map', /world\.reset\(controls, \[myColor\], diff, teams, menuMap\)/.test(HTML));
   check('host start sends the picked map', /k:'start'[^}]*map:menuMap/.test(HTML));
   check('both start panels have a map row', (HTML.match(/class="diffrow maprow"/g)||[]).length === 2);
+  check('profile: name persisted, sent with create and join', /localStorage\.getItem\('bnbName'\)/.test(HTML) && /k:'create'[^}]*name:myName/.test(HTML) && /k:'join'[^}]*name:myName/.test(HTML));
+  check('both waiting rooms have a roster and a READY button', /id="hostRoster"/.test(HTML) && /id="joinRoster"/.test(HTML) && /id="hostReady"/.test(HTML) && /id="joinReady"/.test(HTML));
+  try {
+    const fn = new Function(grab(/function canStart\([^)]*\)\{[^\n]*\n/) + grab(/const RANKS = [^\n]*\n/) + grab(/function rankOf\([^)]*\)\{[^\n]*\n/) + 'return {canStart, rankOf};')();
+    check('canStart: alone -> yes; two humans -> only when both ready', fn.canStart([{ready:false}]) && !fn.canStart([{ready:true},{ready:false}]) && fn.canStart([{ready:true},{ready:true}]));
+    check('rankOf climbs with wins', fn.rankOf(0) !== fn.rankOf(3) && fn.rankOf(60).includes('泡泡王'));
+  } catch(e){ check('client waiting-room helpers extract', false, e.message); }
   check('page keeps one stable device id (myCid, persisted)', !!cidDecl && /localStorage/.test(cidDecl[0]));
   const sockets = [];
   class FakeWS { constructor(){ this.readyState = 1; this.sent = []; sockets.push(this); } send(s){ this.sent.push(JSON.parse(s)); } close(){ this.readyState = 3; this.wasClosed = true; } }
   const els = {}; const doc = { getElementById: id => els[id] || (els[id] = { textContent:'', value:'JUD7', classList:{ toggle(){}, add(){}, remove(){} } }) };
   const ctx = { WebSocket: FakeWS, document: doc, localStorage: { getItem(){ return null; }, setItem(){} }, console,
-    RELAY_URL:'wss://x', netRole:'off', mySlot:0, ws:null, myColor:'#f00', botCount:1, onServerMsg(){}, syncBots(){} };
+    RELAY_URL:'wss://x', netRole:'off', mySlot:0, ws:null, myColor:'#f00', botCount:1, onServerMsg(){}, syncBots(){},
+    myName:'Tab', myWins:0, menuMap:0, menuTeams:false, lobby:null, myReady:false, syncReadyBtns(){}, showJoinRoom(){} };
   const vm = require('vm'); vm.createContext(ctx);
   try {
     vm.runInContext((cidDecl?cidDecl[0]:'') + src, ctx);

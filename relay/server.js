@@ -21,15 +21,35 @@ function send(ws, o){ if(ws.readyState===1){ try{ ws.send(JSON.stringify(o)); }c
 function broadcast(room, o){ const s=JSON.stringify(o); for(const c of room.conns) if(c.ws.readyState===1){ try{ c.ws.send(s); }catch(e){} } }
 const N_SLOTS = BB.MAX_SLOTS; // 8
 function pickMap(v){ const i = v|0; return BB.MAPS[i] ? i : 0; }   // a known map index, never a roll
-function lobbyInfo(room){ return { k:'lobby', code:room.code, n:room.conns.length, bots:room.bots, cap:N_SLOTS-room.bots, state:room.state, map:room.map }; }
+// The waiting room, as everyone sees it: every seat, who is ready, which team
+// they picked, and the host's settings. Like 泡泡堂: players press 准备, only the
+// host presses 开始, and only once every human is ready.
+function lobbyInfo(room){
+  const players = room.conns.map(c => ({ slot:c.slot, name:c.name, color:c.color, wins:c.wins|0, ready:!!c.ready, team:c.team, host:c.slot===0 }))
+    .sort((a,b) => a.slot-b.slot);
+  return { k:'lobby', code:room.code, n:room.conns.length, bots:room.bots, cap:N_SLOTS-room.bots, state:room.state,
+           map:room.map, diff:room.diff, teams:!!room.teamMode, players };
+}
+function allReady(room){ return room.conns.length < 2 || room.conns.every(c => c.ready); }
+function cleanName(v){ const t = String(v==null?'':v).replace(/[\u0000-\u001f]/g,'').trim().slice(0, 14); return t || 'Sailor'; }
+// With teams on, every human keeps the side they picked (a new joiner lands on
+// the smaller side); bots fill in so the two sides come out as even as possible.
+function balanceTeams(room){
+  if (!room.teamMode) return;
+  for (const c of room.conns) if (c.team!==0 && c.team!==1) c.team = teamSize(room,0) <= teamSize(room,1) ? 0 : 1;
+}
+function teamSize(room, t){ return room.conns.filter(c => c.team===t).length; }
 function buildControls(room){
   const controls = new Array(N_SLOTS).fill('none'), colors = [];
   for(const c of room.conns){ if(c.slot>=0 && c.slot<N_SLOTS){ controls[c.slot]='remote'; colors[c.slot]=c.color; } } // humans
   let need = room.bots || 0;
   for(let s=0;s<N_SLOTS && need>0;s++){ if(controls[s]==='none'){ controls[s]='ai'; need--; } }              // bots into empty seats
   let teams = null;
-  if(room.teamMode){ teams = new Array(N_SLOTS).fill(null); let k=0;
-    for(let s=0;s<N_SLOTS;s++){ if(controls[s]!=='none'){ teams[s]=k%2; k++; } } }                          // auto-split into 2 teams
+  if(room.teamMode){ teams = new Array(N_SLOTS).fill(null);
+    balanceTeams(room);
+    const size = [0, 0];
+    for(const c of room.conns){ teams[c.slot] = c.team; size[c.team]++; }                                   // humans: the side they chose
+    for(let s=0;s<N_SLOTS;s++) if(controls[s]==='ai'){ const t = size[0] <= size[1] ? 0 : 1; teams[s]=t; size[t]++; } } // bots even it out
   return { controls, colors, teams };
 }
 function beginGame(room){
@@ -63,7 +83,8 @@ function evictGhost(room, ws, cid){
 }
 function seat(room, ws, m, slot){
   ws.cid = m.cid; ws.roomCode = room.code; ws.slot = slot; ws.color = m.color || BB.PALETTE[slot % BB.PALETTE.length];
-  room.conns.push({ ws, cid:ws.cid, slot, color:ws.color });
+  room.conns.push({ ws, cid:ws.cid, slot, color:ws.color, name:cleanName(m.name), wins:Math.max(0, m.wins|0), ready:false, team:null });
+  balanceTeams(room);
   send(ws, { k:'joined', code:room.code, slot });
   broadcast(room, lobbyInfo(room));
 }
@@ -108,9 +129,22 @@ wss.on('connection', (ws) => {
 
     const room = rooms.get(ws.roomCode);
     if (!room) return;
+    const me = room.conns.find(c => c.ws === ws);
+    if (m.k === 'setready') { if (me && room.state === 'lobby') { me.ready = !!m.ready; broadcast(room, lobbyInfo(room)); } return; }
+    if (m.k === 'setteam') { if (me && room.state === 'lobby' && room.teamMode && (m.team===0 || m.team===1)) { me.team = m.team; broadcast(room, lobbyInfo(room)); } return; }
+    if (m.k === 'profile') { if (me) { me.name = cleanName(m.name); me.wins = Math.max(0, m.wins|0); if (m.color) { me.color = ws.color = m.color; } broadcast(room, lobbyInfo(room)); } return; }
+    if (m.k === 'setopts') { if (ws.slot === 0 && room.state === 'lobby') {
+      if (m.diff && ['easy','normal','hard'].includes(m.diff)) room.diff = m.diff;
+      if (m.teams != null) { room.teamMode = !!m.teams; balanceTeams(room); }
+      if (m.map != null) room.map = pickMap(m.map);
+      if (m.bots != null) room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots|0));
+      broadcast(room, lobbyInfo(room)); } return; }
     if (m.k === 'setmap') { if (ws.slot === 0 && room.state === 'lobby') { room.map = pickMap(m.map); broadcast(room, lobbyInfo(room)); } return; }
     if (m.k === 'setbots') { if (ws.slot === 0 && room.state === 'lobby') { room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots||0)); broadcast(room, lobbyInfo(room)); } return; }
-    if (m.k === 'start' || m.k === 'restart') { if (ws.slot === 0) { if (m.bots!=null) room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots)); if (m.teams!=null) room.teamMode = !!m.teams; if (m.map!=null) room.map = pickMap(m.map); room.diff = m.diff || room.diff; beginGame(room); } return; }
+    if (m.k === 'start' || m.k === 'restart') { if (ws.slot === 0) {
+      if (m.bots!=null) room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots)); if (m.teams!=null) room.teamMode = !!m.teams; if (m.map!=null) room.map = pickMap(m.map); room.diff = m.diff || room.diff;
+      if (room.state === 'lobby' && !allReady(room)) { send(ws, { k:'notready', waiting:room.conns.filter(c => !c.ready).map(c => c.name) }); return; }   // 开始 only when everyone pressed 准备
+      beginGame(room); } return; }
     if (m.k === 'input') { if (room.world && room.state === 'playing') room.world.setInput(ws.slot, { dir:m.dir, bomb:m.bomb, tap:m.tap, half:m.half, seq:m.seq }); return; }
   });
   ws.on('close', () => {
@@ -119,6 +153,7 @@ wss.on('connection', (ws) => {
     const wasHost = ws.slot === 0;
     room.conns = room.conns.filter(c => c.ws !== ws);
     if (!room.conns.length || wasHost) { broadcast(room, { k:'closed' }); closeRoom(room); return; }
+    balanceTeams(room);
     broadcast(room, lobbyInfo(room));
   });
   ws.on('error', () => {});
