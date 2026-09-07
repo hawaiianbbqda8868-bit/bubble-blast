@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v39';
+const CORE_VERSION = 'v41';
 const COLS = 19, ROWS = 17;
 const FUSE = 3.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -27,7 +27,10 @@ const FUSE = 3.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOV
 // leans back where he came from. So a press is one tile, he is never standing
 // still while you are holding a direction, and the first tile is never slow.
 const TAP_HOLD = 0.32;
-const LEAN_MAX = 0.25;              // he never leans more than a quarter of a tile in
+const LEAN_MAX = 0.25;
+// Rolling from one held direction to the next within this gap is the same
+// walk: "tap or walk?" was already answered, so a corner is not a new lean.
+const ROLL_GAP = 0.15;              // he never leans more than a quarter of a tile in
 // 半身位. A sailor can stop ON the line between two tiles (a half-step), and
 // his damage point sits a little BELOW his centre — a blast catches him only
 // when that point is inside its tile. That one rule gives all three cases:
@@ -102,7 +105,7 @@ function rollFrom(pool){                            // weighted pick
 function makeWorld() {
   let grid, players, bubbles, blasts, powerups, decor, theme, shipCenter;
   let burstCounter = 0, gameState = 'lobby', winnerSlot = -1, diff = 'normal';
-  let teamMode = false, winnerTeam = -1;
+  let teamMode = false, winnerTeam = -1, simTime = 0, mapIdx = 0;
   let events = [];
 
   const inB = (x,y) => x>=0 && x<COLS && y>=0 && y<ROWS;
@@ -149,8 +152,8 @@ function makeWorld() {
     decor = new Map(); shipCenter = null;
     for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++)
       if(x===0||y===0||x===COLS-1||y===ROWS-1){ grid[y][x]=WALL; decor.set(key(x,y),'hull'); }
-    const id = (mapId!=null) ? mapId : Math.floor(Math.random()*MAPS.length);
-    const M = MAPS[id]; theme = M.theme;
+    const id = MAPS[mapId] ? mapId : 0;                 // the map is picked on the start screen; no roll
+    const M = MAPS[id]; theme = M.theme; mapIdx = id;
     const set=(x,y,type)=>{ if(inB(x,y)){ grid[y][x]=WALL; decor.set(key(x,y),type); if(type==='ship') shipCenter={x:MIDX,y:MIDY}; } };
     M.layout(set);
     const safe=new Set();
@@ -175,13 +178,13 @@ function makeWorld() {
     const spice=[{move:+0.05,trap:-0.15},{move:0,trap:0},{move:-0.03,trap:+0.1}][i];
     return { move:Math.max(0.1,base.move+spice.move), trap:Math.min(1,Math.max(0,base.trap+spice.trap)), react:base.react, esc:base.esc };
   }
-  function reset(controls, colors, d, teams){
+  function reset(controls, colors, d, teams, mapId){
     diff = d || 'normal';
     controls = controls || ['local','ai','ai','ai'];
     colors = colors || [];
     teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
-    buildMap();
-    bubbles=[]; blasts=[]; powerups=[]; burstCounter=0; gameState='playing'; winnerSlot=-1; winnerTeam=-1; events=[];
+    buildMap(mapId);
+    bubbles=[]; blasts=[]; powerups=[]; burstCounter=0; gameState='playing'; winnerSlot=-1; winnerTeam=-1; events=[]; simTime=0;
     const used=new Set(colors.filter(Boolean));
     const botPool=PALETTE.filter(c=>!used.has(c));
     let bi=0, bp=0;
@@ -192,7 +195,7 @@ function makeWorld() {
       const p=makePlayer(s[0],s[1], !aiLike, cap, aiLike?botPlan(bi++%3):null);
       p.control=ctrl; p.slot=i; p.captain=false; p.inHeld=[]; p.inBomb=false; p._lastHeld=null;
       p.inTap=false; p.tapTtl=0; p.inSeq=0; p._stepSeq=0; p._doneSeq=0; p.inHalf=false; p.faceX=1;
-      p._pressSeq=-1; p.pressT=0; p.pressSteps=0;
+      p._pressSeq=-1; p.pressT=0; p.pressSteps=0; p.idleT=9;
       p.team = teamMode ? (teams[i]==null?null:teams[i]) : null;
       if(ctrl==='none') p.alive=false;   // slot not in this match (player-count < 4)
       return p;
@@ -375,9 +378,43 @@ function makeWorld() {
     events.push('power');
   }
 
+  // Standing on a tile (or a line): decide what to do next and, if there is
+  // somewhere to go, set off. Called when he is not moving — and again in the
+  // very tick a tile lands, so a walk is one continuous motion (see update).
+  function startStep(p, danger, dt){
+      let dir=null, bubble=false;
+    if(p.control==='ai'){ p.think-=dt; if(p.think<=0){ p.think=0.05; const a=botAct(p,danger); dir=a.dir; bubble=a.bubble; p._dir=dir; } else dir=p._dir; }
+    else { dir=(p.inHeld&&p.inHeld.length)?p.inHeld[p.inHeld.length-1]:null; if(p.inBomb){ bubble=true; p.inBomb=false; } }
+    if(bubble) placeBubble(p);
+    // One press = one tile. The first tile of a press always goes; a second
+    // one only once the press has lasted TAP_HOLD, and never off a tap the
+    // player has already let go of (p.inTap), whose direction the client is
+    // only replaying. In between he may LEAN into the next tile — slowly,
+    // and ready to lean back — so that holding never looks like a stall.
+    const committed = p.control==='ai' || p.pressSteps===0 || (p.pressT>=TAP_HOLD && !p.inTap);
+    const leaning = !committed && p.control!=='ai' && p.pressSteps>0 && stillPressing(p);
+    if(dir && (committed || leaning)){ const [dx,dy]=DIRV[dir];
+      const half = p.control!=='ai' && !!p.inHalf;
+      const off = (dx ? p.tx : p.ty) % 1;                                    // already on a line?
+      // half = stop on the next line; otherwise walk to the next tile
+      // centre, which from a line is only half a tile — so you can always
+      // square yourself up again with an ordinary tap.
+      const len = (half || off) ? 0.5 : 1;
+      const nx = p.tx+dx*len, ny = p.ty+dy*len;
+      // shoving needs a whole tile ahead of you, so only square-on from a centre
+      const cx = p.tx+dx, cy = p.ty+dy;
+      if(!half && !off && !leaning && p.control!=='ai' && inB(cx,cy) && grid[cy][cx]===CRATE) pushCrate(p,cx,cy,dx,dy);
+      if(canStand(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir;
+        p.stepLen=len; p.tentative=leaning;
+        if(dx) p.faceX=dx;                                                   // which way he leans
+        p._stepSeq=p.inSeq; p.pressSteps++;                                  // which press this step belongs to
+        if(p.inTap){ p.inHeld=[]; p.inTap=false; p._doneSeq=p.inSeq; } } }   // a tap buys one step
+  }
+
   function update(dt){
     events=[];
     if(gameState!=='playing') return events;
+    simTime+=dt;                                    // stamps snapshots, so a client can draw them evenly however they arrive
     for(const b of bubbles) b.fuse-=dt;
     let popped=true;
     while(popped){ popped=false;
@@ -394,8 +431,12 @@ function makeWorld() {
       // direction (the client bumps it on every new press), so releasing and
       // pressing again starts a fresh press even in the same direction.
       if(p.control!=='ai'){
-        if(p.inSeq!==p._pressSeq){ p._pressSeq=p.inSeq; p.pressT=dt; p.pressSteps=0; }
+        const pressing = p.inHeld && p.inHeld.length && !p.inTap;
+        if(p.inSeq!==p._pressSeq){
+          const rolling = p.pressT>=TAP_HOLD && p.idleT<=ROLL_GAP;   // a corner taken mid-walk keeps the walk
+          p._pressSeq=p.inSeq; p.pressT=rolling?TAP_HOLD:dt; p.pressSteps=0; }
         else p.pressT+=dt;
+        p.idleT = pressing ? 0 : p.idleT+dt;
       }
       // an owed tap that never found a free tile (walled in, or trapped in a
       // bubble meanwhile) must not fire minutes later
@@ -408,35 +449,7 @@ function makeWorld() {
         else if(p.trapTimer<=0){ p.alive=false; events.push('pop'); }
         continue;
       }
-      if(!p.moving){
-        let dir=null, bubble=false;
-        if(p.control==='ai'){ p.think-=dt; if(p.think<=0){ p.think=0.05; const a=botAct(p,danger); dir=a.dir; bubble=a.bubble; p._dir=dir; } else dir=p._dir; }
-        else { dir=(p.inHeld&&p.inHeld.length)?p.inHeld[p.inHeld.length-1]:null; if(p.inBomb){ bubble=true; p.inBomb=false; } }
-        if(bubble) placeBubble(p);
-        // One press = one tile. The first tile of a press always goes; a second
-        // one only once the press has lasted TAP_HOLD, and never off a tap the
-        // player has already let go of (p.inTap), whose direction the client is
-        // only replaying. In between he may LEAN into the next tile — slowly,
-        // and ready to lean back — so that holding never looks like a stall.
-        const committed = p.control==='ai' || p.pressSteps===0 || (p.pressT>=TAP_HOLD && !p.inTap);
-        const leaning = !committed && p.control!=='ai' && p.pressSteps>0 && stillPressing(p);
-        if(dir && (committed || leaning)){ const [dx,dy]=DIRV[dir];
-          const half = p.control!=='ai' && !!p.inHalf;
-          const off = (dx ? p.tx : p.ty) % 1;                                    // already on a line?
-          // half = stop on the next line; otherwise walk to the next tile
-          // centre, which from a line is only half a tile — so you can always
-          // square yourself up again with an ordinary tap.
-          const len = (half || off) ? 0.5 : 1;
-          const nx = p.tx+dx*len, ny = p.ty+dy*len;
-          // shoving needs a whole tile ahead of you, so only square-on from a centre
-          const cx = p.tx+dx, cy = p.ty+dy;
-          if(!half && !off && !leaning && p.control!=='ai' && inB(cx,cy) && grid[cy][cx]===CRATE) pushCrate(p,cx,cy,dx,dy);
-          if(canStand(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir;
-            p.stepLen=len; p.tentative=leaning;
-            if(dx) p.faceX=dx;                                                   // which way he leans
-            p._stepSeq=p.inSeq; p.pressSteps++;                                  // which press this step belongs to
-            if(p.inTap){ p.inHeld=[]; p.inTap=false; p._doneSeq=p.inSeq; } } }   // a tap buys one step
-      }
+      if(!p.moving) startStep(p, danger, dt);
       if(p.moving){
         if(p.tentative){                            // commit, or lean back
           if(p.pressT>=TAP_HOLD && stillPressing(p)) p.tentative=false;
@@ -446,12 +459,20 @@ function makeWorld() {
             p.t=1-p.t; p.tentative=false; p.pressSteps--;
           }
         }
-        p.t += dt/stepDur(p);
+        const dur=stepDur(p);
+        p.t += dt/dur;
         if(p.t>=1){
+          const spare=(p.t-1)*dur;                      // the part of this tick left over after landing
           p.t=0; p.moving=false; p.tx=p.tox; p.ty=p.toy;
           for(let i=powerups.length-1;i>=0;i--){        // on a line he covers two tiles
             const pu=powerups[i];
             if(Math.abs(pu.x-p.tx)<0.75 && Math.abs(pu.y-p.ty)<0.75) applyItem(p, powerups.splice(i,1)[0].type); }
+          // Carry the leftover into the next tile instead of dropping it: waiting
+          // for the next tick lost up to a whole tick per tile (14% slower at
+          // 30Hz online) and put a standing frame in every snapshot stream, which
+          // is what the client drew as a stutter at every tile.
+          startStep(p, danger, dt);
+          if(p.moving) p.t=Math.min(0.999, spare/stepDur(p));
         }
       }
     }
@@ -519,7 +540,7 @@ function makeWorld() {
     if(inp.bomb) p.inBomb=true; p._lastHeld=inp.dir||null;
   }
   function snapshot(){
-    return { gs:gameState, win:winnerSlot, ev:events, tm:teamMode, wt:winnerTeam,
+    return { gs:gameState, win:winnerSlot, ev:events, tm:teamMode, wt:winnerTeam, st:Math.round(simTime*1000),
       grid: grid.map(r=>r.join('')),
       players: players.map(p=>({slot:p.slot,tx:p.tx,ty:p.ty,fx:p.fx,fy:p.fy,tox:p.tox,toy:p.toy,
         t:p.t,moving:p.moving,dir:p.dir,faceX:p.faceX,alive:p.alive,trapped:p.trapped,trapTimer:p.trapTimer,struggle:p.struggle,
@@ -529,7 +550,7 @@ function makeWorld() {
       blasts: blasts.map(b=>({x:b.x,y:b.y,timer:b.timer})),
       powerups: powerups.map(p=>({x:p.x,y:p.y,type:p.type})) };
   }
-  function mapMsg(){ return { grid:grid.map(r=>r.join('')), decor:[...decor], theme, shipCenter }; }
+  function mapMsg(){ return { grid:grid.map(r=>r.join('')), decor:[...decor], theme, shipCenter, map:mapIdx }; }
   function read(){ return { grid, players, bubbles, blasts, powerups, decor, theme, shipCenter, gameState, winnerSlot, events }; }
 
   return { reset, update, setInput, snapshot, mapMsg, read,

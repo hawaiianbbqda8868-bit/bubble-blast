@@ -150,6 +150,8 @@
   </div>
 
   <div class="panel" id="singlePanel">
+    <div class="status">Map:</div>
+    <div class="diffrow maprow"></div>
     <div class="diffrow">
       <div class="diff" data-d="easy">Easy</div>
       <div class="diff sel" data-d="normal">Normal</div>
@@ -169,6 +171,8 @@
     <div class="lobby" id="hostLobby">Humans: 1 / 8 · Bots: 3</div>
     <div class="status">Bots (humans fill the rest, up to 8 total):</div>
     <div class="stepper"><button class="stepbtn" data-bot="-">−</button><span class="botnum">3</span><button class="stepbtn" data-bot="+">+</button></div>
+    <div class="status">Map:</div>
+    <div class="diffrow maprow"></div>
     <div class="status">Difficulty (for the bots):</div>
     <div class="diffrow">
       <div class="diff" data-d="easy">Easy</div>
@@ -201,10 +205,10 @@
   <button class="smallbtn" id="overMenu">← Menu</button>
 </div>
 
-<script src="game-core.js?v39"></script>
+<script src="game-core.js?v41"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v39';
+const APP_VERSION = 'v41';
 // Last line of defence against a fresh page running an older sim: game-core.js
 // is versioned in its URL, but if the two ever disagree, throw the caches away
 // and reload once rather than play by two different sets of rules.
@@ -242,6 +246,9 @@ const PALETTE = ['#ff5b5b','#ff9d3a','#ffe24d','#5fe08a','#46c8ff','#7c8cff','#c
 let myColor = (function(){ try{ return localStorage.getItem('bnbColor')||PALETTE[0]; }catch(e){ return PALETTE[0]; } })();
 const SPAWNS=BB.SPAWNS, MAPS=BB.MAPS, THEMES=BB.THEMES, MIDX=BB.MIDX, MIDY=BB.MIDY;
 let menuTeams = (function(){ try{ return localStorage.getItem('bnbTeams')==='1'; }catch(e){ return false; } })();
+// The map is chosen on the start screen (and remembered) — never rolled at random.
+let menuMap = (function(){ try{ const v=+localStorage.getItem('bnbMap'); return BB.MAPS[v]?v:0; }catch(e){ return 0; } })();
+const MAP_ICON = { pirate:'🏴‍☠️', stone:'🏰', ice:'❄️', lava:'🌋' };
 let teamMode = false;                        // active in the current match (set at start / from server)
 const TEAM_COLORS = ['#ff5b5b','#46c8ff'];   // Team A (red) / Team B (blue) aura rings
 function areAllies(a,b){ return teamMode && a && b && a.team!=null && a.team===b.team; }
@@ -325,7 +332,7 @@ function startGame(){ netRole='off'; mySlot=0;
   const controls=['local']; for(let i=0;i<n;i++) controls.push('ai'); while(controls.length<8) controls.push('none');
   const teams = menuTeams ? autoTeams(controls) : null;
   teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
-  world=BB.makeWorld(); world.reset(controls, [myColor], diff, teams); syncWorld();
+  world=BB.makeWorld(); world.reset(controls, [myColor], diff, teams, menuMap); syncWorld();
   state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
 function endGame(win){ state='over'; showResult(win); }
 
@@ -439,6 +446,13 @@ document.querySelectorAll('.diff[data-d]').forEach(el=>el.onclick=()=>{
 function syncBots(){ document.querySelectorAll('.botnum').forEach(e=>e.textContent=botCount); }
 function setBots(n){ botCount=Math.max(0,Math.min(7,n)); syncBots(); if(netRole==='host') wsSend({k:'setbots', bots:botCount}); }
 document.querySelectorAll('[data-bot]').forEach(b=>b.onclick=()=>setBots(botCount+(b.dataset.bot==='+'?1:-1)));
+function syncMapPick(){ document.querySelectorAll('.maprow .diff').forEach(e=>e.classList.toggle('sel', +e.dataset.map===menuMap)); }
+function setMap(i){ if(!BB.MAPS[i]) return; menuMap=i; try{ localStorage.setItem('bnbMap',String(i)); }catch(_){}
+  syncMapPick(); previewMap(i); if(netRole==='host') wsSend({k:'setmap', map:i}); }
+document.querySelectorAll('.maprow').forEach(row=>{
+  BB.MAPS.forEach((m,i)=>{ const b=document.createElement('div'); b.className='diff'; b.dataset.map=i;
+    b.textContent=(MAP_ICON[m.theme]||'🗺️')+' '+m.name; b.onclick=()=>setMap(i); row.appendChild(b); }); });
+syncMapPick();
 function syncTeamToggle(){ document.querySelectorAll('.teamtoggle').forEach(e=>{ e.textContent = menuTeams?'🤝 Teams: On':'🤝 Teams: Off'; e.classList.toggle('sel', menuTeams); }); }
 document.querySelectorAll('.teamtoggle').forEach(e=>e.onclick=()=>{ menuTeams=!menuTeams; try{ localStorage.setItem('bnbTeams', menuTeams?'1':'0'); }catch(_){}; syncTeamToggle(); });
 syncTeamToggle();
@@ -675,8 +689,7 @@ function updateCamera(){
   const me = players && (players[mySlot] || players[0]);
   if(follow && me && state==='playing'){
     let pcx, pcy;
-    if(me.moving){ pcx=(me.fx+(me.tox-me.fx)*me.t)*TILE+TILE/2; pcy=(me.fy+(me.toy-me.fy)*me.t)*TILE+TILE/2; }
-    else { pcx=me.tx*TILE+TILE/2; pcy=me.ty*TILE+TILE/2; }
+    const q=drawPos(me); pcx=q.x*TILE+TILE/2; pcy=q.y*TILE+TILE/2;
     tx = pcx-viewW/2; ty = pcy-viewH/2;
   } else { tx = worldW/2-viewW/2; ty = worldH/2-viewH/2; }
   tx = worldW<=viewW ? (worldW-viewW)/2 : Math.max(0, Math.min(tx, worldW-viewW));
@@ -747,9 +760,7 @@ function render(){
   // players
   for(const p of players){
     if(!p.alive) continue;
-    let cx,cy;
-    if(p.moving){ cx=(p.fx+(p.tox-p.fx)*p.t)*TILE+TILE/2; cy=(p.fy+(p.toy-p.fy)*p.t)*TILE+TILE/2; }
-    else { cx=p.tx*TILE+TILE/2; cy=p.ty*TILE+TILE/2; }
+    const q=drawPos(p), cx=q.x*TILE+TILE/2, cy=q.y*TILE+TILE/2;
     drawCharacter(p,cx,cy);
     // trapped bubble overlay — countdown ring (pop = death), wiggle to escape
     if(p.trapped){
@@ -787,6 +798,10 @@ function render(){
 const RELAY_URL='wss://bubble-blast-relay-production.up.railway.app';
 let browseWs=null, browseTimer=null, lastInDir='_', lastInTap=false, lastInHalf=false, lastInT=0, botCount=3;
 function rid(){ return Math.random().toString(36).slice(2,9); }
+// One id per device, kept across reloads: the server uses it to recognise a tablet
+// that re-joins on a fresh socket (second tap on Join, or back from sleep) and
+// gives it back its seat instead of counting it as a new human.
+let myCid = (function(){ try{ let c=localStorage.getItem('bnbCid'); if(!c){ c=rid()+rid(); localStorage.setItem('bnbCid',c); } return c; }catch(e){ return rid()+rid(); } })();
 function wsSend(o){ if(ws && ws.readyState===1){ try{ ws.send(JSON.stringify(o)); }catch(e){} } }
 function leaveNet(){ try{ if(ws) ws.close(); }catch(e){} ws=null; netRole='off'; mySlot=0; }
 function applyMap(m){ grid=m.grid.map(s=>s.split('').map(Number)); decor=new Map(m.decor||[]); theme=m.theme||'pirate'; shipCenter=m.shipCenter||null; }
@@ -799,21 +814,26 @@ function onServerMsg(ev){
   }
   else if(d.k==='lobby'){ if(typeof d.bots==='number'){ botCount=d.bots; syncBots(); }
     const el=document.getElementById('hostLobby'); if(el) el.textContent='Humans: '+d.n+' / '+d.cap+'   ·   Bots: '+d.bots;
-    if(netRole==='client' && state!=='playing'){ const js=document.getElementById('joinStatus'); if(js) js.textContent='In the lobby — '+d.n+' human(s) + '+d.bots+' bots. Waiting for host…'; } }
+    if(netRole==='client' && state!=='playing'){ const js=document.getElementById('joinStatus');
+      const mp=BB.MAPS[d.map]; if(mp) previewMap(d.map);
+      if(js) js.textContent='In the lobby — '+d.n+' human(s) + '+d.bots+' bots'+(mp?' · '+mp.name:'')+'. Waiting for host…'; } }
   else if(d.k==='joinfail'){ document.getElementById('joinStatus').textContent=d.reason||'Could not join.'; netRole='off'; }
-  else if(d.k==='start'){ applyMap(d); teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
+  else if(d.k==='start'){ applyMap(d); snaps=[]; snapLag=[]; drawLag=40; teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
   else if(d.k==='state'){ applySnapshot(d); }
   else if(d.k==='closed'){ if(netRole!=='off' && state!=='start'){ toMenu(); document.getElementById('joinStatus').textContent='Host left — room closed.'; } }
 }
-function connectServer(onOpen){ ws=new WebSocket(RELAY_URL); ws.onopen=onOpen; ws.onmessage=onServerMsg; ws.onerror=()=>{}; ws.onclose=()=>{}; }
+function connectServer(onOpen){
+  if(ws){ ws.onopen=ws.onmessage=ws.onclose=ws.onerror=null; try{ ws.close(); }catch(e){} }   // never hold two seats from one tablet
+  ws=new WebSocket(RELAY_URL); ws.onopen=onOpen; ws.onmessage=onServerMsg; ws.onerror=()=>{}; ws.onclose=()=>{};
+}
 
 // ---- HOST (a client that can pick player count + press START) ----
 function hostGame(){
   document.getElementById('hostStatus').textContent='Connecting…'; document.getElementById('roomCode').textContent='…';
   netRole='host'; mySlot=0; syncBots();
-  connectServer(()=>wsSend({k:'create', cid:rid(), color:myColor, bots:botCount}));
+  connectServer(()=>wsSend({k:'create', cid:myCid, color:myColor, bots:botCount, map:menuMap}));
 }
-function hostStart(){ wsSend({k:'start', diff, bots:botCount, teams:menuTeams}); }
+function hostStart(){ wsSend({k:'start', diff, bots:botCount, teams:menuTeams, map:menuMap}); }
 
 // ---- CLIENT (joiner) ----
 function joinGame(){
@@ -821,24 +841,53 @@ function joinGame(){
   const code=(document.getElementById('joinCode').value||'').trim().toUpperCase();
   if(code.length<3){ st.textContent='Type the room code first.'; return; }
   st.textContent='Connecting…'; netRole='client'; mySlot=0;
-  connectServer(()=>wsSend({k:'join', cid:rid(), code, color:myColor}));
+  connectServer(()=>wsSend({k:'join', cid:myCid, code, color:myColor}));
 }
 // Smoothly carry motion + anim between (sparse) host snapshots so the
 // joiner renders at 60fps instead of jumping at the snapshot rate.
-function clientAdvance(dt){
+// Sailors are drawn a little behind the newest snapshot, between the two
+// snapshots that bracket that moment — by the SIM time each one carries, not by
+// when it happened to arrive. Snapshots come at 30Hz and arrive bunched; drawing
+// each one the instant it landed froze him at every tile and then jumped. The
+// delay adapts to the link: one tick of headroom on a clean one, up to the worst
+// recent lateness on a jittery one.
+let snapLag=[], drawLag=40;                           // arrival - sim time, recent; and how far behind to draw
+let snaps=[];                                         // the last few snapshots, with arrival times
+function posOf(p){ return p.moving ? {x:p.fx+(p.tox-p.fx)*p.t, y:p.fy+(p.toy-p.fy)*p.t} : {x:p.tx, y:p.ty}; }
+function stepAhead(p, ms){                            // where a snapshot's sailor is `ms` later if his step carries on
+  if(!p.moving) return posOf(p);
+  const t=Math.min(1, p.t+ms/1000/(p.md||0.15));
+  return {x:p.fx+(p.tox-p.fx)*t, y:p.fy+(p.toy-p.fy)*t};
+}
+function drawPos(p){ return p.rx!=null ? {x:p.rx, y:p.ry} : posOf(p); }
+function smoothPlayers(dt, now){
   if(!players) return;
-  for(const p of players){
-    if(!p) continue;
-    p.anim=(p.anim||0)+dt;
-    if(p.alive && p.moving && !p.trapped){
-      p.t=(p.t||0)+dt/(p.md||0.15);
-      if(p.t>1) p.t=1;
-    }
+  for(const p of players) if(p) p.anim=(p.anim||0)+dt;
+  if(!snaps.length) return;
+  const rs=now-drawLag;                               // the sim moment we draw, on our clock
+  let a=null, b=null;
+  for(const s of snaps){ if(s.st<=rs) a=s; else { b=s; break; } }
+  for(let i=0;i<players.length;i++){
+    const p=players[i]; if(!p) continue;
+    let q;
+    if(a && b){ const pa=a.players[i], pb=b.players[i];
+      if(pa && pb){ const f=(rs-a.st)/Math.max(1,b.st-a.st), A=posOf(pa), B=posOf(pb); q={x:A.x+(B.x-A.x)*f, y:A.y+(B.y-A.y)*f}; }
+      else q=posOf(p); }
+    else if(a){ const pa=a.players[i]; q=pa ? stepAhead(pa, rs-a.st) : posOf(p); }   // newest is late: carry on
+    else q=posOf((b.players[i])||p);
+    p.rx=q.x; p.ry=q.y;
   }
 }
 function applySnapshot(d){
   grid=d.grid.map(s=>s.split('').map(Number));
   players=d.players; bubbles=d.bubbles; blasts=d.blasts; powerups=d.powerups;
+  if(typeof d.st==='number'){                        // sim time -> our clock: draw behind the latest any recent snapshot ran
+    const at=performance.now(), lag=at-d.st;
+    snapLag.push(lag); if(snapLag.length>30) snapLag.shift();
+    const lo=Math.min(...snapLag), hi=Math.max(...snapLag);
+    drawLag=Math.min(lo+150, Math.max(lo+40, hi+8));
+    snaps.push({at, st:d.st+lo, players:d.players}); if(snaps.length>12) snaps.shift();
+  }
   state=d.gs; winnerSlot=d.win; teamMode=!!d.tm;
   if(state==='playing') hideOverlays();
   if(d.ev) for(const e of d.ev){ const f=sfx[e]; if(f) f(); }   // game sounds from the server
@@ -889,16 +938,18 @@ function loop(ts){
       }
     }
   } else {                                // online: thin client (host & joiners alike)
-    if(state==='playing'){ netSendInput(); clientAdvance(dt); }
+    if(state==='playing'){ netSendInput(); smoothPlayers(dt, ts); }
   }
   if(state!=='start') render();
   requestAnimationFrame(loop);
 }
 
-// initial paint: a map behind the menu, built by the core like any real match
-(function(){ const w=BB.makeWorld(); w.reset(new Array(8).fill('none'), [], 'normal');
+// the map behind the menu is the one picked, built by the core like any real match
+function previewMap(i){ if(state!=='start') return;
+  const w=BB.makeWorld(); w.reset(new Array(8).fill('none'), [], 'normal', null, i);
   const r=w.read(); grid=r.grid; decor=r.decor; theme=r.theme; shipCenter=r.shipCenter;
-  players=[]; bubbles=[]; blasts=[]; powerups=[]; })();
+  players=[]; bubbles=[]; blasts=[]; powerups=[]; }
+previewMap(menuMap);
 document.getElementById('ver').textContent=APP_VERSION;
 requestAnimationFrame(loop);
 
