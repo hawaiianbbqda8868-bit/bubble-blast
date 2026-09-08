@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v41';
+const CORE_VERSION = 'v42';
 const COLS = 19, ROWS = 17;
 const FUSE = 3.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -546,7 +546,7 @@ function makeWorld() {
         t:p.t,moving:p.moving,dir:p.dir,faceX:p.faceX,alive:p.alive,trapped:p.trapped,trapTimer:p.trapTimer,struggle:p.struggle,
         range:p.range,maxBubbles:p.maxBubbles,speed:p.speed,ride:p.ride,isHuman:p.isHuman,capColor:p.capColor,anim:p.anim,team:p.team,
         md:(p.isHuman?moveDur(p):botMoveDur(p)),color:SKIN,colorLight:SKIN_LT})),
-      bubbles: bubbles.map(b=>({x:b.x,y:b.y,fuse:b.fuse,range:b.range})),
+      bubbles: bubbles.map(b=>({x:b.x,y:b.y,fuse:b.fuse,range:b.range,o:b.owner?b.owner.slot:-1})),   // o: whose, so a client can count its own
       blasts: blasts.map(b=>({x:b.x,y:b.y,timer:b.timer})),
       powerups: powerups.map(p=>({x:p.x,y:p.y,type:p.type})) };
   }

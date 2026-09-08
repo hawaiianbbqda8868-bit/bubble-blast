@@ -387,10 +387,10 @@
   </div>
 </div>
 
-<script src="game-core.js?v41"></script>
+<script src="game-core.js?v42"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v41';
+const APP_VERSION = 'v42';
 // Last line of defence against a fresh page running an older sim: game-core.js
 // is versioned in its URL, but if the two ever disagree, throw the caches away
 // and reload once rather than play by two different sets of rules.
@@ -1122,7 +1122,7 @@ function onServerMsg(ev){
     if(state!=='playing') renderRoster(); }
   else if(d.k==='notready'){ document.getElementById('hostStatus').textContent='Not yet — waiting for READY: '+(d.waiting||[]).join(', '); }
   else if(d.k==='joinfail'){ document.getElementById('joinStatus').textContent=d.reason||'Could not join.'; netRole='off'; showJoinRoom(false); }
-  else if(d.k==='start'){ applyMap(d); snaps=[]; snapLag=[]; drawLag=40; teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); predictInit(d); }
+  else if(d.k==='start'){ applyMap(d); snaps=[]; snapLag=[]; drawLag=40; simOff=null; teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); predictInit(d); }
   else if(d.k==='state'){ applySnapshot(d); }
   else if(d.k==='closed'){ if(netRole!=='off' && state!=='start'){ toMenu(); document.getElementById('joinStatus').textContent='Host left — room closed.'; } }
 }
@@ -1160,7 +1160,7 @@ function joinGame(){
 // each one the instant it landed froze him at every tile and then jumped. The
 // delay adapts to the link: one tick of headroom on a clean one, up to the worst
 // recent lateness on a jittery one.
-let snapLag=[], drawLag=40;                           // arrival - sim time, recent; and how far behind to draw
+let snapLag=[], drawLag=40, simOff=null;              // arrival - sim time, recent; how far behind to draw; sim clock -> ours
 let snaps=[];                                         // the last few snapshots, with arrival times
 function posOf(p){ return p.moving ? {x:p.fx+(p.tox-p.fx)*p.t, y:p.fy+(p.toy-p.fy)*p.t} : {x:p.tx, y:p.ty}; }
 function stepAhead(p, ms){                            // where a snapshot's sailor is `ms` later if his step carries on
@@ -1173,7 +1173,8 @@ function smoothPlayers(dt, now){
   if(!players) return;
   for(const p of players) if(p) p.anim=(p.anim||0)+dt;
   if(!snaps.length) return;
-  const rs=now-drawLag;                               // the sim moment we draw, on our clock
+  if(simOff==null) return;
+  const rs=now-simOff-drawLag;                        // the sim moment we draw, in sim time
   let a=null, b=null;
   for(const s of snaps){ if(s.st<=rs) a=s; else { b=s; break; } }
   for(let i=0;i<players.length;i++){
@@ -1194,20 +1195,20 @@ function smoothPlayers(dt, now){
 // against where the copy thinks you are; when the server disagrees (blocked,
 // trapped, popped) the copy snaps to the server. Everyone else is drawn from
 // snapshots as before.
-let pred=null;                          // { w:local world, hist:[{x,y,at}], mode:'local'|'server', ghost:{x,y,at} }
+let pred=null;                          // { w:local world, hist:[{x,y,at}], mode:'local'|'server' }
 function predictInit(m){
   if(netRole==='off') return;
   const controls=new Array(8).fill('none'); controls[mySlot]='remote'; controls[(mySlot+4)%8]='remote';   // a second sailor keeps the copy 'playing'
   const w=BB.makeWorld(); w.reset(controls, [], 'normal', null, m.map);
   const r=w.read(); if(m.grid) m.grid.forEach((row,y)=>{ const g=r.grid[y]; for(let x=0;x<row.length;x++) g[x]=+row[x]; });
-  pred={ w, hist:[], mode:'local', ghost:null };
+  pred={ w, hist:[], mode:'local' };
 }
-function predictInput(pkt){ if(!pred) return; pred.w.setInput(mySlot, pkt);
-  if(pkt.bomb && pred.mode==='local'){ const L=pred.w.read().players[mySlot]; pred.ghost={ x:Math.round(L.tx), y:Math.round(L.ty), at:performance.now() }; } }
+function predictInput(pkt){ if(pred) pred.w.setInput(mySlot, pkt); }
 function predictStep(dt){
   if(!pred || state!=='playing' || pred.mode!=='local') return;
   pred.w.update(dt);
   const L=pred.w.read().players[mySlot], h=pred.hist, last=h[h.length-1], now=performance.now();
+  for(const b of pred.w.read().bubbles) if(!b.mirror && !b.ghostAt) b.ghostAt=now;   // a bubble the copy just dropped: shown until the server's arrives
   if(!last || last.x!==L.tx || last.y!==L.ty) h.push({x:L.tx, y:L.ty, at:now});
   while(h.length && now-h[0].at>1200) h.shift();
 }
@@ -1217,12 +1218,16 @@ function predictReconcile(d){
   if(!pred) return; const S=d.players[mySlot]; if(!S) return;
   const r=pred.w.read(), L=r.players[mySlot];
   d.grid.forEach((row,y)=>{ const g=r.grid[y]; for(let x=0;x<row.length;x++) g[x]=+row[x]; });         // walls and crates as the server has them
-  r.bubbles.length=0; for(const b of d.bubbles) r.bubbles.push({ x:b.x, y:b.y, fuse:99, range:b.range, owner:{active:0}, id:-1 });   // block the way, never burst here
+  const now=performance.now();
+  const ghosts=r.bubbles.filter(b=>b.ghostAt && now-b.ghostAt<900 && !d.bubbles.some(s=>s.x===b.x&&s.y===b.y));   // dropped here, not confirmed yet
+  r.bubbles.length=0; for(const b of d.bubbles) r.bubbles.push({ x:b.x, y:b.y, fuse:99, range:b.range, owner:{active:0}, id:-1, mirror:true });   // block the way, never burst here
+  for(const g of ghosts) r.bubbles.push(g);
   L.speed=S.speed; L.range=S.range; L.maxBubbles=S.maxBubbles; L.ride=S.ride;
-  if(pred.ghost && (d.bubbles.some(b=>b.x===pred.ghost.x&&b.y===pred.ghost.y) || performance.now()-pred.ghost.at>700)) pred.ghost=null;
+  L.active=d.bubbles.filter(b=>b.o===mySlot).length + ghosts.length;                                     // so the copy refuses a drop the server would refuse
   if(S.trapped || !S.alive){ pred.mode='server'; return; }                                              // the server owns you while you are bubbled
   const at=(x,y,px,py)=>Math.abs(x-px)<0.01 && Math.abs(y-py)<0.01;
-  const seen=(x,y)=> at(x,y,L.tx,L.ty) || (L.moving && at(x,y,L.tox,L.toy)) || pred.hist.some(h=>at(x,y,h.x,h.y));
+  const STALE=450;                                                                                      // a round trip plus a tick, with margin
+  const seen=(x,y)=> at(x,y,L.tx,L.ty) || (L.moving && at(x,y,L.tox,L.toy)) || pred.hist.some(h=>at(x,y,h.x,h.y) && now-h.at<STALE);
   const hx=S.moving?S.tox:S.tx, hy=S.moving?S.toy:S.ty;                                                  // where the server sailor is / is heading
   if(pred.mode==='server' || !(seen(S.tx,S.ty) || seen(hx,hy))){ pred.mode='local'; snapTo(L,S); }
 }
@@ -1231,7 +1236,7 @@ function predictDraw(){
   const me=players[mySlot]; if(!me) return;
   const L=pred.w.read().players[mySlot], q=posOf(L);
   me.rx=q.x; me.ry=q.y; me.moving=L.moving; me.dir=L.dir; me.faceX=L.faceX; me.anim=L.anim; me.fx=L.fx; me.fy=L.fy; me.tox=L.tox; me.toy=L.toy; me.t=L.t;
-  if(pred.ghost && !bubbles.some(b=>b.x===pred.ghost.x&&b.y===pred.ghost.y)) bubbles.push({ x:pred.ghost.x, y:pred.ghost.y, fuse:FUSE, range:me.range });   // the bubble you just dropped
+  for(const g of pred.w.read().bubbles) if(g.ghostAt && !bubbles.some(b=>b.x===g.x&&b.y===g.y)) bubbles.push({ x:g.x, y:g.y, fuse:g.fuse, range:g.range });   // the bubble you just dropped
 }
 function applySnapshot(d){
   predictReconcile(d);
@@ -1240,9 +1245,13 @@ function applySnapshot(d){
   if(typeof d.st==='number'){                        // sim time -> our clock: draw behind the latest any recent snapshot ran
     const at=performance.now(), lag=at-d.st;
     snapLag.push(lag); if(snapLag.length>30) snapLag.shift();
-    const sorted=snapLag.slice().sort((a,b)=>a-b), lo=sorted[0], hi=sorted[Math.floor((sorted.length-1)*0.9)];   // lo maps sim time onto our clock; hi: 90th-percentile lateness
+    const sorted=snapLag.slice().sort((a,b)=>a-b), lo=sorted[0], hi=sorted[Math.floor((sorted.length-1)*0.9)];   // lo: least-delayed mapping; hi: 90th-percentile lateness
+    // One offset for every buffered snapshot, eased rather than re-picked each
+    // time: re-mapping only the new ones stretched and squeezed the timeline
+    // between neighbours, which showed as sailors drifting and catching up.
+    simOff = simOff==null ? lo : simOff + (lo-simOff)*0.15;
     drawLag=Math.min(120, Math.max(40, (hi-lo)+8));                     // headroom = the usual jitter spread; a rare spike just extrapolates for a frame
-    snaps.push({at, st:d.st+lo, players:d.players}); if(snaps.length>12) snaps.shift();
+    snaps.push({at, st:d.st, players:d.players}); if(snaps.length>12) snaps.shift();
   }
   state=d.gs; winnerSlot=d.win; teamMode=!!d.tm;
   if(state==='playing') hideOverlays();

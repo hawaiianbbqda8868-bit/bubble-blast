@@ -22,12 +22,12 @@ const grabLet = re => { const m = HTML.match(re); if (!m) throw new Error('index
 const SRC = ['armDir', 'pressDir', 'releaseDir', 'effectiveDirArr', 'netSendInput', 'applySnapshot', 'posOf', 'stepAhead', 'smoothPlayers', 'drawPos', 'predictInit', 'predictInput', 'predictStep', 'snapTo', 'predictReconcile', 'predictDraw', 'loop'].map(extract).join('\n');
 const FRAME = 1000 / 60, SDT = 1 / 30;
 
-function run({ online, script, rtt = 0, jitter = 0, speed = 0, runMs = 2500, seed = 7, predict = false, wallAhead = 0 }) {
+function run({ online, script, rtt = 0, jitter = 0, speed = 0, runMs = 2500, seed = 7, predict = false, wallAhead = 0, acts = [], simRate = 1, srvActs = [], startX = BB.MIDX }) {
   let rnd = seed; const rand = () => { rnd = (rnd * 1103515245 + 12345) & 0x7fffffff; return rnd / 0x7fffffff; };
   let clock = 0; const toS = [], toC = []; let lastArrive = 0;
   const world = BB.makeWorld(); world.reset(['local', 'none', 'none', 'none'], ['#fff'], 'normal');
   const w0 = world.read(); for (let y = 1; y < w0.grid.length - 1; y++) for (let x = 1; x < w0.grid[y].length - 1; x++) w0.grid[y][x] = BB.FLOOR;
-  const p0 = w0.players[0]; p0.speed = speed; p0.tx = p0.fx = p0.tox = BB.MIDX; p0.ty = p0.fy = p0.toy = BB.MIDY;
+  const p0 = w0.players[0]; p0.speed = speed; p0.tx = p0.fx = p0.tox = startX; p0.ty = p0.fy = p0.toy = BB.MIDY;
   if (wallAhead) w0.grid[BB.MIDY][BB.MIDX + wallAhead] = BB.WALL;      // the server knows about a wall the copy will only learn from snapshots
   const ctx = { clock: 0, online, BB, players: online ? world.snapshot().players : w0.players, send: o => { if (o.k === 'input') toS.push([clock + rtt / 2, o]); }, world };
   const C = new Function('ctx', `
@@ -43,25 +43,27 @@ function run({ online, script, rtt = 0, jitter = 0, speed = 0, runMs = 2500, see
     function syncWorld(){ const r = ctx.world.read(); players = r.players; }
     const render = () => {};
     ${SRC}
-    return { loop, pressDir, releaseDir, snapshot: d => applySnapshot(d), predictInit: m => predictInit(m), pos: () => { const q = drawPos(players[0]); return q.x + 1000 * q.y; } };`)(ctx);
+    return { loop, pressDir, releaseDir, snapshot: d => applySnapshot(d), predictInit: m => predictInit(m), drop: () => { wantBubble = true; }, nb: () => (bubbles || []).length, pos: () => { const q = drawPos(players[0]); return q.x + 1000 * q.y; } };`)(ctx);
   if (online && predict) { const mm = world.mapMsg(); mm.grid = world.read().grid.map(r => r.join('')); C.predictInit(mm); }
   const ev = script.flatMap(([at, dir, hold]) => [[200 + at, 'down', dir], [200 + at + hold, 'up', dir]]).sort((a, b) => a[0] - b[0]);
-  let ei = 0, acc = 0; const landings = []; let prev = { x: p0.tx, y: p0.ty }; const frames = []; let lastPos = C.pos();
+  let ei = 0, ai = 0, si = 0, acc = 0; const landings = []; let prev = { x: p0.tx, y: p0.ty }; const frames = []; let lastPos = C.pos();
   for (; clock < runMs; clock += FRAME) {
     ctx.clock = clock;
     while (ei < ev.length && clock >= ev[ei][0]) { const [, k, d] = ev[ei++]; k === 'down' ? C.pressDir(d) : C.releaseDir(d); }
+    while (ai < acts.length && clock >= acts[ai][0]) acts[ai++][1](C);
     if (online) while (toC.length && toC[0][0] <= clock) C.snapshot(toC.shift()[1]);   // snapshots land before the frame draws
     C.loop(clock);
     if (online) {
       while (toS.length && toS[0][0] <= clock) { const m = toS.shift()[1]; world.setInput(0, { dir: m.dir, bomb: m.bomb, tap: m.tap, half: m.half, seq: m.seq }); }
       acc += FRAME / 1000;
-      while (acc >= SDT) { acc -= SDT; world.update(SDT);
+      while (acc >= SDT) { acc -= SDT; world.update(SDT * simRate);                       // simRate: the relay's clock runs a little fast or slow
+        while (si < srvActs.length && clock >= srvActs[si][0]) srvActs[si++][1](world);
         lastArrive = Math.max(lastArrive, clock + rtt / 2 + rand() * jitter);          // TCP: in order, bunched
         toC.push([lastArrive, Object.assign({ k: 'state' }, world.snapshot())]); }
     }
     const me = world.read().players[0];
     if (me.tx !== prev.x || me.ty !== prev.y) { landings.push(Math.round(clock - 200)); prev = { x: me.tx, y: me.ty }; }
-    const pos = C.pos(); frames.push({ t: clock, d: pos - lastPos }); lastPos = pos;
+    const pos = C.pos(); frames.push({ t: clock, d: pos - lastPos, nb: C.nb(), srvNb: world.read().bubbles.length }); lastPos = pos;
   }
   return { landings, gaps: landings.map((l, i) => i ? l - landings[i - 1] : l), frames };
 }
@@ -121,4 +123,22 @@ for (const rtt of [120, 250]) {
   const r = run({ online: true, rtt: 120, predict: true, wallAhead: 2, script: [[0, 'right', 900]], runMs: 1800 });
   const lastPos = r.frames.reduce((a, f) => a + f.d, 0);
   check('a wall the copy did not know about: he settles on the server tile', Math.abs(lastPos - 1) < 0.02 && r.frames.slice(-15).every(f => f.d === 0), `drawn offset ${lastPos.toFixed(2)} tiles (server allows 1)`); }
+console.log('\n7. No drifting: a fast relay clock with jitter, and a bubble that appears in your way\n');
+{ const r = run({ online: true, rtt: 120, jitter: 40, simRate: 1.02, startX: 1, script: [[0, 'right', 3100]], runMs: 3600 });   // 16 open tiles from the left edge
+  const mv = r.frames.filter(f => f.t > 700 && f.t < 3300);
+  const back = mv.filter(f => f.d < -1e-6).length, jump = mv.filter(f => f.d > 0.2).length, frozen = mv.filter(f => f.d === 0).length;
+  check('remote sailor, relay clock 2% fast + jitter: steady walk', back === 0 && jump === 0 && frozen <= 2, `frozen ${frozen}, backwards ${back}, jumps ${jump} over ${mv.length} frames`); }
+{ const r = run({ online: true, rtt: 120, predict: true, script: [[0, 'right', 1200]], runMs: 2200,
+    srvActs: [[330, w => { const b = w.read().bubbles; b.push({ x: BB.MIDX + 2, y: BB.MIDY, fuse: 99, range: 1, owner: { active: 0 } }); }]] });
+  const off = r.frames.reduce((a, f) => a + f.d, 0);
+  check('a bubble dropped in your path by someone else: you end where the server put you', Math.abs(off - 1) < 0.02 && r.frames.slice(-15).every(f => f.d === 0), `drawn offset ${off.toFixed(2)} tiles`); }
+
+console.log('\n6. A dropped bubble shows at once and never blinks out\n');
+for (const rtt of [120, 250]) {
+  const r = run({ online: true, rtt, predict: true, script: [], acts: [[300, C => C.drop()], [700, C => C.drop()]], runMs: 1800 });
+  const after = r.frames.filter(f => f.t >= 300 + FRAME && f.t < 1700);
+  const firstDrawn = r.frames.find(f => f.t >= 300 && f.nb > 0), firstSrv = r.frames.find(f => f.srvNb > 0);
+  check(`rtt ${rtt}: drawn within a frame, server ${firstSrv ? Math.round(firstSrv.t - 300) : '?'}ms later`, firstDrawn && firstDrawn.t - 300 <= FRAME + 1, firstDrawn ? `${Math.round(firstDrawn.t - 300)}ms` : 'never drawn');
+  check(`rtt ${rtt}: never blinks out while it burns`, after.every(f => f.nb === 1), `bubbles drawn per frame: ${[...new Set(after.map(f => f.nb))].join(',')}`);
+}
 console.log(failed ? `\n${failed} FAILED` : '\nall cases pass'); process.exit(failed ? 1 : 0);
