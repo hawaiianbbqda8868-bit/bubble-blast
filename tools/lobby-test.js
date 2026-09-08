@@ -129,7 +129,7 @@ function clientTests(){
   check('page remembers the picked map (menuMap, persisted)', !!mapDecl && /localStorage/.test(mapDecl[0]));
   check('single-player starts on the picked map', /world\.reset\(controls, \[myColor\], diff, teams, menuMap\)/.test(HTML));
   check('host start sends the picked map', /k:'start'[^}]*map:menuMap/.test(HTML));
-  check('both start panels have a map row', (HTML.match(/class="diffrow maprow"/g)||[]).length === 2);
+  check('both start panels have a map row', (HTML.match(/class="diffrow maprow( grid)?"/g)||[]).length === 2);
   check('profile: name persisted, sent with create and join', /localStorage\.getItem\('bnbName'\)/.test(HTML) && /k:'create'[^}]*name:myName/.test(HTML) && /k:'join'[^}]*name:myName/.test(HTML));
   check('both waiting rooms have a roster and a READY button', /id="hostRoster"/.test(HTML) && /id="joinRoster"/.test(HTML) && /id="hostReady"/.test(HTML) && /id="joinReady"/.test(HTML));
   try {

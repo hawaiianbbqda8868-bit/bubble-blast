@@ -98,7 +98,7 @@ wss.on('connection', (ws) => {
 
     if (m.k === 'list') {
       const list = [];
-      for (const r of rooms.values()) if (r.state === 'lobby') list.push({ code:r.code, n:r.conns.length });
+      for (const r of rooms.values()) if (r.state === 'lobby') list.push({ code:r.code, n:r.conns.length, cap:N_SLOTS - r.bots, map:r.map, teams:!!r.teamMode });
       send(ws, { k:'rooms', rooms:list });
       return;
     }
