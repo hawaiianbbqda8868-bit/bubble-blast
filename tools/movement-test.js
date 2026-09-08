@@ -85,7 +85,7 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
     const ws = { readyState: 1 };
     const wsSend = o => ctx.send(o);
     const mashEscape = () => {};
-    const smoothPlayers = () => {};
+    const smoothPlayers = () => {}; let paused = false; const predictStep = () => {}, predictDraw = () => {}, predictInput = () => {};
     const render = () => {};
     ${CLIENT_SRC}
     return { loop, pressDir, releaseDir, syncWorld, setHalf: v => { halfMode = v; },

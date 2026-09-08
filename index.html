@@ -199,6 +199,10 @@
   .roombtn .st { font:800 11px Nunito,sans-serif; color:var(--mut2); text-align:right; }
   .roomempty { display:flex; align-items:center; justify-content:center; padding:12px; border-radius:20px; border:2px dashed rgba(255,255,255,.12); font:700 14px Nunito,sans-serif; color:#8dabb9; text-align:center; }
 
+  .dialog { width:min(360px,92vw); background:var(--bg); border:2px solid var(--line); border-radius:28px; padding:26px 22px; text-align:center; }
+  .dialog .h1 { font:800 26px 'Baloo 2',sans-serif; color:#fff; }
+  .dialog .sub { font:700 14px Nunito,sans-serif; color:var(--mut); margin-top:6px; }
+  #pauseScreen { z-index:55; }
   /* 07 result */
   .kicker { font:800 15px Nunito,sans-serif; letter-spacing:6px; color:var(--teal); }
   .result { font:800 56px 'Baloo 2',sans-serif; line-height:1.05; color:var(--gold); margin-top:6px; }
@@ -358,6 +362,16 @@
   </div>
 </div>
 
+<!-- pause / leave -->
+<div class="overlay hidden" id="pauseScreen" style="background:rgba(7,15,20,.7); align-items:center">
+  <div class="dialog">
+    <div class="h1 disp">Leave the match?</div>
+    <div class="sub" id="pauseSub"></div>
+    <button class="btn-gold" id="pauseBack" style="margin-top:18px">BACK TO GAME</button>
+    <button class="btn-menu" id="pauseLeave" style="margin-top:10px">LEAVE MATCH</button>
+  </div>
+</div>
+
 <!-- 07 · result -->
 <div class="overlay hidden" id="overScreen">
   <div class="screen show" style="padding:32px 22px 24px; text-align:center">
@@ -494,12 +508,12 @@ const key = (x,y)=> x+','+y;
 // ====================== RESET / START ======================
 // difficulty per bot, blended with chosen level so "mixed" feels varied
 
-function hideOverlays(){
+function hideOverlays(){                 // called on every snapshot: must leave the pause dialog alone
   document.getElementById('startScreen').classList.add('hidden');
   document.getElementById('overScreen').classList.add('hidden');
 }
 function showResult(win){
-  recordGame(win);
+  recordGame(win); paused=false; document.getElementById('pauseScreen').classList.add('hidden');
   const r=document.getElementById('resultText');
   r.textContent = win ? 'YOU WIN!' : 'POPPED';
   r.className = 'result '+(win?'win':'lose');
@@ -689,12 +703,20 @@ document.getElementById('joinReady').onclick=()=>setReady(!myReady);
 document.getElementById('hostTeam').onclick=switchTeam;
 document.getElementById('joinTeam').onclick=switchTeam;
 document.getElementById('joinConnect').onclick=()=>{ stopBrowse(); joinGame(); };
-document.getElementById('menuBtn').onclick=()=>toMenu();
+// The in-game menu button used to drop you straight out of the match. Ask first.
+let paused=false;
+function showPause(on){ paused=on && netRole==='off';                       // single-player really pauses; online the match goes on
+  document.getElementById('pauseScreen').classList.toggle('hidden', !on);
+  document.getElementById('pauseSub').textContent = netRole==='off' ? 'The match is paused' : (netRole==='host' ? 'Leaving closes the room for everyone' : 'The match keeps going without you');
+  if(on) last=performance.now(); }
+document.getElementById('menuBtn').onclick=()=>showPause(true);
+document.getElementById('pauseBack').onclick=()=>{ showPause(false); last=performance.now(); };
+document.getElementById('pauseLeave').onclick=()=>{ showPause(false); toMenu(); };
 document.getElementById('overMenu').onclick=()=>toMenu();
 
 // ---- back-to-menu + online room browser ----
 function toMenu(){
-  stopBrowse(); leaveNet(); state='start';
+  stopBrowse(); leaveNet(); state='start'; paused=false; document.getElementById('pauseScreen').classList.add('hidden');
   document.getElementById('overScreen').classList.add('hidden');
   document.getElementById('startScreen').classList.remove('hidden');
   showPanel(null);
@@ -1038,7 +1060,7 @@ function rid(){ return Math.random().toString(36).slice(2,9); }
 // gives it back its seat instead of counting it as a new human.
 let myCid = (function(){ try{ let c=localStorage.getItem('bnbCid'); if(!c){ c=rid()+rid(); localStorage.setItem('bnbCid',c); } return c; }catch(e){ return rid()+rid(); } })();
 function wsSend(o){ if(ws && ws.readyState===1){ try{ ws.send(JSON.stringify(o)); }catch(e){} } }
-function leaveNet(){ if(ws){ ws.onopen=ws.onmessage=ws.onclose=ws.onerror=null; try{ ws.close(); }catch(e){} } ws=null; netRole='off'; mySlot=0; lobby=null; myReady=false; showJoinRoom(false); }
+function leaveNet(){ pred=null; if(ws){ ws.onopen=ws.onmessage=ws.onclose=ws.onerror=null; try{ ws.close(); }catch(e){} } ws=null; netRole='off'; mySlot=0; lobby=null; myReady=false; showJoinRoom(false); }
 function applyMap(m){ grid=m.grid.map(s=>s.split('').map(Number)); decor=new Map(m.decor||[]); theme=m.theme||'pirate'; shipCenter=m.shipCenter||null; }
 
 // ---- the waiting room (泡泡堂-style): seats, 准备 READY, and a side to pick with teams on ----
@@ -1100,7 +1122,7 @@ function onServerMsg(ev){
     if(state!=='playing') renderRoster(); }
   else if(d.k==='notready'){ document.getElementById('hostStatus').textContent='Not yet — waiting for READY: '+(d.waiting||[]).join(', '); }
   else if(d.k==='joinfail'){ document.getElementById('joinStatus').textContent=d.reason||'Could not join.'; netRole='off'; showJoinRoom(false); }
-  else if(d.k==='start'){ applyMap(d); snaps=[]; snapLag=[]; drawLag=40; teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
+  else if(d.k==='start'){ applyMap(d); snaps=[]; snapLag=[]; drawLag=40; teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); predictInit(d); }
   else if(d.k==='state'){ applySnapshot(d); }
   else if(d.k==='closed'){ if(netRole!=='off' && state!=='start'){ toMenu(); document.getElementById('joinStatus').textContent='Host left — room closed.'; } }
 }
@@ -1165,14 +1187,61 @@ function smoothPlayers(dt, now){
     p.rx=q.x; p.ry=q.y;
   }
 }
+// ====================== PREDICTION (your own sailor, online) ======================
+// The relay is a 110-190ms round trip away, and that showed on every press.
+// Your own sailor now moves the moment you press, on a local copy of the sim
+// fed the very same input packets the relay gets. Each snapshot is checked
+// against where the copy thinks you are; when the server disagrees (blocked,
+// trapped, popped) the copy snaps to the server. Everyone else is drawn from
+// snapshots as before.
+let pred=null;                          // { w:local world, hist:[{x,y,at}], mode:'local'|'server', ghost:{x,y,at} }
+function predictInit(m){
+  if(netRole==='off') return;
+  const controls=new Array(8).fill('none'); controls[mySlot]='remote'; controls[(mySlot+4)%8]='remote';   // a second sailor keeps the copy 'playing'
+  const w=BB.makeWorld(); w.reset(controls, [], 'normal', null, m.map);
+  const r=w.read(); if(m.grid) m.grid.forEach((row,y)=>{ const g=r.grid[y]; for(let x=0;x<row.length;x++) g[x]=+row[x]; });
+  pred={ w, hist:[], mode:'local', ghost:null };
+}
+function predictInput(pkt){ if(!pred) return; pred.w.setInput(mySlot, pkt);
+  if(pkt.bomb && pred.mode==='local'){ const L=pred.w.read().players[mySlot]; pred.ghost={ x:Math.round(L.tx), y:Math.round(L.ty), at:performance.now() }; } }
+function predictStep(dt){
+  if(!pred || state!=='playing' || pred.mode!=='local') return;
+  pred.w.update(dt);
+  const L=pred.w.read().players[mySlot], h=pred.hist, last=h[h.length-1], now=performance.now();
+  if(!last || last.x!==L.tx || last.y!==L.ty) h.push({x:L.tx, y:L.ty, at:now});
+  while(h.length && now-h[0].at>1200) h.shift();
+}
+function snapTo(L,S){ L.tx=S.tx; L.ty=S.ty; L.fx=S.fx; L.fy=S.fy; L.tox=S.tox; L.toy=S.toy; L.t=S.t; L.moving=S.moving; L.dir=S.dir; L.faceX=S.faceX;
+  L.tentative=false; L.stepLen=S.moving ? (Math.max(Math.abs(S.tox-S.fx),Math.abs(S.toy-S.fy))||1) : 1; pred.hist.length=0; }
+function predictReconcile(d){
+  if(!pred) return; const S=d.players[mySlot]; if(!S) return;
+  const r=pred.w.read(), L=r.players[mySlot];
+  d.grid.forEach((row,y)=>{ const g=r.grid[y]; for(let x=0;x<row.length;x++) g[x]=+row[x]; });         // walls and crates as the server has them
+  r.bubbles.length=0; for(const b of d.bubbles) r.bubbles.push({ x:b.x, y:b.y, fuse:99, range:b.range, owner:{active:0}, id:-1 });   // block the way, never burst here
+  L.speed=S.speed; L.range=S.range; L.maxBubbles=S.maxBubbles; L.ride=S.ride;
+  if(pred.ghost && (d.bubbles.some(b=>b.x===pred.ghost.x&&b.y===pred.ghost.y) || performance.now()-pred.ghost.at>700)) pred.ghost=null;
+  if(S.trapped || !S.alive){ pred.mode='server'; return; }                                              // the server owns you while you are bubbled
+  const at=(x,y,px,py)=>Math.abs(x-px)<0.01 && Math.abs(y-py)<0.01;
+  const seen=(x,y)=> at(x,y,L.tx,L.ty) || (L.moving && at(x,y,L.tox,L.toy)) || pred.hist.some(h=>at(x,y,h.x,h.y));
+  const hx=S.moving?S.tox:S.tx, hy=S.moving?S.toy:S.ty;                                                  // where the server sailor is / is heading
+  if(pred.mode==='server' || !(seen(S.tx,S.ty) || seen(hx,hy))){ pred.mode='local'; snapTo(L,S); }
+}
+function predictDraw(){
+  if(!pred || pred.mode!=='local' || !players) return;
+  const me=players[mySlot]; if(!me) return;
+  const L=pred.w.read().players[mySlot], q=posOf(L);
+  me.rx=q.x; me.ry=q.y; me.moving=L.moving; me.dir=L.dir; me.faceX=L.faceX; me.anim=L.anim; me.fx=L.fx; me.fy=L.fy; me.tox=L.tox; me.toy=L.toy; me.t=L.t;
+  if(pred.ghost && !bubbles.some(b=>b.x===pred.ghost.x&&b.y===pred.ghost.y)) bubbles.push({ x:pred.ghost.x, y:pred.ghost.y, fuse:FUSE, range:me.range });   // the bubble you just dropped
+}
 function applySnapshot(d){
+  predictReconcile(d);
   grid=d.grid.map(s=>s.split('').map(Number));
-  players=d.players; bubbles=d.bubbles; blasts=d.blasts; powerups=d.powerups;
+  players=d.players.map(p=>p&&Object.assign({},p)); bubbles=d.bubbles; blasts=d.blasts; powerups=d.powerups;
   if(typeof d.st==='number'){                        // sim time -> our clock: draw behind the latest any recent snapshot ran
     const at=performance.now(), lag=at-d.st;
     snapLag.push(lag); if(snapLag.length>30) snapLag.shift();
-    const lo=Math.min(...snapLag), hi=Math.max(...snapLag);
-    drawLag=Math.min(lo+150, Math.max(lo+40, hi+8));
+    const sorted=snapLag.slice().sort((a,b)=>a-b), lo=sorted[0], hi=sorted[Math.floor((sorted.length-1)*0.9)];   // lo maps sim time onto our clock; hi: 90th-percentile lateness
+    drawLag=Math.min(120, Math.max(40, (hi-lo)+8));                     // headroom = the usual jitter spread; a rare spike just extrapolates for a frame
     snaps.push({at, st:d.st+lo, players:d.players}); if(snaps.length>12) snaps.shift();
   }
   state=d.gs; winnerSlot=d.win; teamMode=!!d.tm;
@@ -1198,7 +1267,8 @@ function netSendInput(){
   // transition; the "stop" packet follows when the buffer expires.
   if(bomb || dir!==lastInDir || tap!==lastInTap || half!==lastInHalf || (!tap && now-lastInT>120)){
     lastInDir=dir; lastInTap=tap; lastInHalf=half; lastInT=now;
-    wsSend({k:'input', dir, bomb, tap, half, seq:inSeq});
+    const pkt={k:'input', dir, bomb, tap, half, seq:inSeq};
+    wsSend(pkt); predictInput(pkt);
   }
 }
 
@@ -1206,7 +1276,7 @@ function netSendInput(){
 function loop(ts){
   const dt=Math.min(0.05,(ts-last)/1000)||0; last=ts;
   if(netRole==='off'){                    // single-player: step the local world
-    if(state==='playing' && world){
+    if(state==='playing' && world && !paused){
       const me=players&&players[0];
       if(me){ me.inHeld=effectiveDirArr(); me.inSeq=inSeq; me.inHalf=halfOn(); if(wantBubble) me.inBomb=true; }
       wantBubble=false;
@@ -1225,7 +1295,7 @@ function loop(ts){
       }
     }
   } else {                                // online: thin client (host & joiners alike)
-    if(state==='playing'){ netSendInput(); smoothPlayers(dt, ts); }
+    if(state==='playing' && !paused){ netSendInput(); smoothPlayers(dt, ts); predictStep(dt); predictDraw(); }
   }
   if(state!=='start') render();
   requestAnimationFrame(loop);

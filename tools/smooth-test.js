@@ -19,18 +19,20 @@ const BB = require(path.join(ROOT, 'relay/game-core.js'));
 const HTML = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
 const extract = name => { const m = HTML.match(new RegExp('function ' + name + '\\([^)]*\\)\\{[\\s\\S]*?\\n\\}\\n|function ' + name + '\\([^)]*\\)\\{[^\\n]*\\n')); if (!m) throw new Error('index.html has no ' + name); return m[0]; };
 const grabLet = re => { const m = HTML.match(re); if (!m) throw new Error('index.html lacks ' + re); return m[0]; };
-const SRC = ['armDir', 'pressDir', 'releaseDir', 'effectiveDirArr', 'netSendInput', 'applySnapshot', 'posOf', 'stepAhead', 'smoothPlayers', 'drawPos', 'loop'].map(extract).join('\n');
+const SRC = ['armDir', 'pressDir', 'releaseDir', 'effectiveDirArr', 'netSendInput', 'applySnapshot', 'posOf', 'stepAhead', 'smoothPlayers', 'drawPos', 'predictInit', 'predictInput', 'predictStep', 'snapTo', 'predictReconcile', 'predictDraw', 'loop'].map(extract).join('\n');
 const FRAME = 1000 / 60, SDT = 1 / 30;
 
-function run({ online, script, rtt = 0, jitter = 0, speed = 0, runMs = 2500, seed = 7 }) {
+function run({ online, script, rtt = 0, jitter = 0, speed = 0, runMs = 2500, seed = 7, predict = false, wallAhead = 0 }) {
   let rnd = seed; const rand = () => { rnd = (rnd * 1103515245 + 12345) & 0x7fffffff; return rnd / 0x7fffffff; };
   let clock = 0; const toS = [], toC = []; let lastArrive = 0;
   const world = BB.makeWorld(); world.reset(['local', 'none', 'none', 'none'], ['#fff'], 'normal');
   const w0 = world.read(); for (let y = 1; y < w0.grid.length - 1; y++) for (let x = 1; x < w0.grid[y].length - 1; x++) w0.grid[y][x] = BB.FLOOR;
   const p0 = w0.players[0]; p0.speed = speed; p0.tx = p0.fx = p0.tox = BB.MIDX; p0.ty = p0.fy = p0.toy = BB.MIDY;
-  const ctx = { clock: 0, online, players: online ? world.snapshot().players : w0.players, send: o => { if (o.k === 'input') toS.push([clock + rtt / 2, o]); }, world };
+  if (wallAhead) w0.grid[BB.MIDY][BB.MIDX + wallAhead] = BB.WALL;      // the server knows about a wall the copy will only learn from snapshots
+  const ctx = { clock: 0, online, BB, players: online ? world.snapshot().players : w0.players, send: o => { if (o.k === 'input') toS.push([clock + rtt / 2, o]); }, world };
   const C = new Function('ctx', `
-    const performance = { now: () => ctx.clock }; const requestAnimationFrame = () => {}; let last = 0; const held = [];
+    const performance = { now: () => ctx.clock }; const requestAnimationFrame = () => {}; let last = 0; const held = []; const BB = ctx.BB; let paused = false; const FUSE = BB.FUSE;
+    let pred = null;
     let wantBubble = false, bufferDir = null, bufferT = 0, inSeq = 0, lastInDir = '_', lastInTap = false, lastInHalf = false, lastInT = 0;
     let grid, players = ctx.players, bubbles, blasts, powerups; let state = 'playing', mySlot = 0, teamMode = false, winnerSlot = -1, deadShown = false;
     let netRole = ctx.online ? 'host' : 'off'; const world = ctx.online ? null : ctx.world; let halfMode = false, halfKey = false; const halfOn = () => false;
@@ -41,7 +43,8 @@ function run({ online, script, rtt = 0, jitter = 0, speed = 0, runMs = 2500, see
     function syncWorld(){ const r = ctx.world.read(); players = r.players; }
     const render = () => {};
     ${SRC}
-    return { loop, pressDir, releaseDir, snapshot: d => applySnapshot(d), pos: () => { const q = drawPos(players[0]); return q.x + 1000 * q.y; } };`)(ctx);
+    return { loop, pressDir, releaseDir, snapshot: d => applySnapshot(d), predictInit: m => predictInit(m), pos: () => { const q = drawPos(players[0]); return q.x + 1000 * q.y; } };`)(ctx);
+  if (online && predict) { const mm = world.mapMsg(); mm.grid = world.read().grid.map(r => r.join('')); C.predictInit(mm); }
   const ev = script.flatMap(([at, dir, hold]) => [[200 + at, 'down', dir], [200 + at + hold, 'up', dir]]).sort((a, b) => a[0] - b[0]);
   let ei = 0, acc = 0; const landings = []; let prev = { x: p0.tx, y: p0.ty }; const frames = []; let lastPos = C.pos();
   for (; clock < runMs; clock += FRAME) {
@@ -103,4 +106,19 @@ console.log('\n4. ...and a tap still lands on the tile, drawn exactly there\n');
   const end = r.frames[r.frames.length - 1];
   check('online tap: one tile, then still', r.landings.length === 1 && r.frames.slice(-20).every(f => f.d === 0), `${r.landings.length} tile(s); last frames ${r.frames.slice(-3).map(f => f.d.toFixed(3)).join(' ')}`); }
 
+console.log('\n5. Your own sailor moves the moment you press (predicted), and lands where the server says\n');
+for (const rtt of [120, 250]) {
+  const r = run({ online: true, rtt, predict: true, script: [[0, 'right', 80]], runMs: 1600 });
+  const first = r.frames.find(f => f.t >= 200 && Math.abs(f.d) > 1e-6);
+  check(`rtt ${rtt}: drawn sailor starts within 2 frames of the press`, first && first.t - 200 <= 2 * FRAME + 1, first ? `${Math.round(first.t - 200)}ms after the press` : 'never moved');
+  const end = r.frames[r.frames.length - 1];
+  check(`rtt ${rtt}: a tap ends on one tile, drawn exactly there`, r.landings.length === 1 && r.frames.slice(-20).every(f => f.d === 0), `${r.landings.length} tile(s); last frames ${r.frames.slice(-3).map(f => f.d.toFixed(3)).join(' ')}`);
+}
+{ const r = run({ online: true, rtt: 120, predict: true, script: [[0, 'right', 1500]], runMs: 2000 });
+  const mv = r.frames.filter(f => f.t > 700 && f.t < 1650);
+  check('rtt 120, holding: predicted walk is smooth (no freezes, no jumps back)', mv.every(f => f.d > 0 && f.d < 0.2), `worst frames ${Math.min(...mv.map(f => f.d)).toFixed(3)} .. ${Math.max(...mv.map(f => f.d)).toFixed(3)}`); }
+{ // the copy runs into a wall only the server knows about: it must snap back to the server's tile, not walk through it
+  const r = run({ online: true, rtt: 120, predict: true, wallAhead: 2, script: [[0, 'right', 900]], runMs: 1800 });
+  const lastPos = r.frames.reduce((a, f) => a + f.d, 0);
+  check('a wall the copy did not know about: he settles on the server tile', Math.abs(lastPos - 1) < 0.02 && r.frames.slice(-15).every(f => f.d === 0), `drawn offset ${lastPos.toFixed(2)} tiles (server allows 1)`); }
 console.log(failed ? `\n${failed} FAILED` : '\nall cases pass'); process.exit(failed ? 1 : 0);
