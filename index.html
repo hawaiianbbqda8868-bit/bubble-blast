@@ -172,6 +172,7 @@
   .seat .rd { font:800 11px Nunito,sans-serif; color:var(--green); margin-top:2px; }
   .seat .rd.wait { color:var(--gold); }
   .seat.away { opacity:.55; }
+  .seat .kick { position:absolute; top:-9px; right:-6px; height:20px; min-width:20px; padding:0 6px; border:none; border-radius:10px; background:#ff5b5b; color:#fff; font:800 11px Nunito,sans-serif; line-height:20px; }
   .seat .crown { position:absolute; top:-9px; left:10px; font-size:15px; }
   .seat.t0 { box-shadow:inset 4px 0 0 #ff5b5b; } .seat.t1 { box-shadow:inset 4px 0 0 #46c8ff; }
   .status { text-align:center; font:700 14px Nunito,sans-serif; color:var(--mut); min-height:18px; }
@@ -1091,10 +1092,17 @@ function seatHtml(p){
   if(p.kind==='bot') return '<div class="seat bot'+(lobby.teams&&p.team!=null?' t'+p.team:'')+'"><div class="av bot">🤖</div><div class="info"><div class="nm">Bot</div><div class="rk">'+(lobby.diff||'normal').replace(/^\w/,c=>c.toUpperCase())+' skill</div><div class="rd">READY</div></div></div>';
   const cls='seat human'+(p.slot===mySlot?' me':'')+(p.ready&&!p.away?' ready':'')+(p.away?' away':'')+(lobby.teams&&p.team!=null?' t'+p.team:'');
   const esc=String(p.name||'Sailor').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  return '<div class="'+cls+'">'+(p.host?'<span class="crown">👑</span>':'')+'<div class="av" style="--cap:'+p.color+'"></div>'
+  const kick = (netRole==='host' && !p.host) ? '<button class="kick" data-kick="'+p.slot+'" title="Remove from room">'+(kickArm&&kickArm.slot===p.slot?'KICK?':'✕')+'</button>' : '';
+  return '<div class="'+cls+'">'+(p.host?'<span class="crown">👑</span>':'')+kick+'<div class="av" style="--cap:'+p.color+'"></div>'
     +'<div class="info"><div class="nm">'+esc+(p.slot===mySlot?' (you)':'')+'</div><div class="rk">'+rankOf(p.wins|0).split(' ')[0]+' · '+(p.wins|0)+'🏆</div>'
     +'<div class="rd'+(p.ready&&!p.away?'':' wait')+'">'+(p.away?'AWAY':p.ready?'READY':'WAITING…')+'</div></div></div>';
 }
+// Host only: ✕ on a seat asks "KICK?", a second tap within 3s removes them.
+let kickArm=null;
+function armKick(slot){ const now=performance.now();
+  if(kickArm && kickArm.slot===slot && now-kickArm.at<3000){ kickArm=null; wsSend({k:'kick', slot}); }
+  else { kickArm={slot, at:now}; setTimeout(()=>{ if(kickArm && performance.now()-kickArm.at>=3000){ kickArm=null; renderRoster(); } }, 3100); }
+  renderRoster(); }
 function renderRoster(){
   if(!lobby) return;
   const seats=new Array(8).fill(null).map(()=>({kind:'empty'}));
@@ -1103,6 +1111,7 @@ function renderRoster(){
   for(let i=0;i<8&&need>0;i++) if(seats[i].kind==='empty'){ let t=null; if(lobby.teams){ t=size[0]<=size[1]?0:1; size[t]++; } seats[i]={kind:'bot',team:t}; need--; }
   const html=seats.map(seatHtml).join('');
   for(const id of ['hostRoster','joinRoster']){ const el=document.getElementById(id); if(el) el.innerHTML=html; }
+  document.querySelectorAll('#hostRoster .kick').forEach(b=>b.onclick=e=>{ e.stopPropagation(); armKick(+b.dataset.kick); });
   const mp=BB.MAPS[lobby.map];
   const set=(id,v)=>{ const el=document.getElementById(id); if(el) el.innerHTML=v; };
   for(const side of ['host','join']){ set(side+'Sailors', lobby.n+' <small>/ '+lobby.cap+'</small>'); set(side+'Bots', String(lobby.bots)); set(side+'Map', mp?mp.name:'—'); }
@@ -1133,6 +1142,7 @@ function onServerMsg(ev){
     const el=document.getElementById('hostLobby'); if(el) el.textContent='Humans: '+d.n+' / '+d.cap+'   ·   Bots: '+d.bots;
     if(netRole==='client'){ if(d.diff){ diff=d.diff; } menuTeams=!!d.teams; syncTeamToggle(); const mp=BB.MAPS[d.map]; if(mp) previewMap(d.map); }
     if(state!=='playing') renderRoster(); }
+  else if(d.k==='kicked'){ giveUp('The host removed you from the room.'); }
   else if(d.k==='notready'){ document.getElementById('hostStatus').textContent='Not yet — waiting for READY: '+(d.waiting||[]).join(', '); }
   else if(d.k==='joinfail'){ if(roomCode && state!=='start'){ giveUp(d.reason||'Could not get back in.'); return; }
     document.getElementById('joinStatus').textContent=d.reason||'Could not join.'; netRole='off'; showJoinRoom(false); }

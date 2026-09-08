@@ -134,6 +134,11 @@ wss.on('connection', (ws) => {
     const room = rooms.get(ws.roomCode);
     if (!room) return;
     const me = room.conns.find(c => c.ws === ws);
+    if (m.k === 'kick') {                               // the host shows someone the door (a seat that went quiet, or a stranger)
+      if (ws.slot === 0 && room.state === 'lobby') {
+        const t = room.conns.find(c => c.slot === (m.slot|0) && c.slot !== 0);
+        if (t) { room.conns = room.conns.filter(c => c !== t); send(t.ws, { k:'kicked' }); try { t.ws.close(); } catch {} balanceTeams(room); broadcast(room, lobbyInfo(room)); }
+      } return; }
     if (m.k === 'setready') { if (me && room.state === 'lobby') { me.ready = !!m.ready; broadcast(room, lobbyInfo(room)); } return; }
     if (m.k === 'setteam') { if (me && room.state === 'lobby' && room.teamMode && (m.team===0 || m.team===1)) { me.team = m.team; broadcast(room, lobbyInfo(room)); } return; }
     if (m.k === 'profile') { if (me) { me.name = cleanName(m.name); me.wins = Math.max(0, m.wins|0); if (m.color) { me.color = ws.color = m.color; } broadcast(room, lobbyInfo(room)); } return; }
@@ -164,7 +169,7 @@ wss.on('connection', (ws) => {
   ws.on('error', () => {});
 });
 
-setInterval(() => { wss.clients.forEach(ws => { if (!ws.isAlive) return ws.terminate(); ws.isAlive = false; try { ws.ping(); } catch {} }); }, 30000);
+setInterval(() => { wss.clients.forEach(ws => { if (!ws.isAlive) return ws.terminate(); ws.isAlive = false; try { ws.ping(); } catch {} }); }, 10000);   // a silent tablet shows as away within ~20s
 setInterval(() => {                                  // free the seats of players who never came back
   const now = Date.now();
   for (const room of [...rooms.values()]) {

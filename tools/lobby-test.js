@@ -141,6 +141,18 @@ async function serverTests(){
     dan2.ws.terminate(); const closedMsg = await eve3.next('closed', 2500);
     check('a host who never comes back closes the room after the grace period', !!closedMsg);
     for(const c of [dan, dan2, eve, eve2, eve3, stranger]) try{ c.ws.terminate(); }catch(e){}
+
+    console.log('server: the host can kick');
+    const fay = client(url); await fay.open(); fay.send({ k:'create', cid:'FAY', color:'#f00', bots:1, name:'Fay' }); const jfay = await fay.next('joined');
+    const gus = client(url); await gus.open(); gus.send({ k:'join', cid:'GUS', code:jfay.code, name:'Gus' }); const jgus = await gus.next('joined');
+    const hal = client(url); await hal.open(); hal.send({ k:'join', cid:'HAL', code:jfay.code, name:'Hal' }); await hal.next('joined'); await sleep(100);
+    gus.send({ k:'kick', slot:2 }); await sleep(150);
+    check('a joiner cannot kick', fay.last('lobby').n === 3);
+    fay.send({ k:'kick', slot:jgus.slot }); const kicked = await gus.next('kicked'); await sleep(150);
+    check('the host kicks Gus: he is told, the seat is freed', !!kicked && fay.last('lobby').n === 2 && !fay.last('lobby').players.some(p => p.name === 'Gus') && gus.closed, JSON.stringify(fay.last('lobby').players.map(p => p.name)));
+    fay.send({ k:'kick', slot:0 }); await sleep(120);
+    check('the host cannot kick themselves', fay.last('lobby').n === 2 && fay.last('lobby').players[0].name === 'Fay');
+    for(const c of [fay, gus, hal]) try{ c.ws.terminate(); }catch(e){}
   } catch(e){ check('server tests ran without error', false, e.message); }
   srv.kill();
 }
@@ -156,6 +168,7 @@ function clientTests(){
   check('single-player starts on the picked map', /world\.reset\(controls, \[myColor\], diff, teams, menuMap\)/.test(HTML));
   check('host start sends the picked map', /k:'start'[^}]*map:menuMap/.test(HTML));
   check('both start panels have a map row', (HTML.match(/class="diffrow maprow( grid)?"/g)||[]).length === 2);
+  check('host seats carry a kick button; a kicked page leaves', /data-kick=/.test(HTML) && /k:'kick', slot/.test(HTML) && /d\.k==='kicked'/.test(HTML));
   check('page rejoins its room when it comes back to the foreground', /visibilitychange/.test(HTML) && /function tryRejoin\(/.test(HTML) && /scheduleRejoin\(0\)/.test(HTML) && /k:'join', cid:myCid, code:roomCode/.test(HTML));
   check('profile: name persisted, sent with create and join', /localStorage\.getItem\('bnbName'\)/.test(HTML) && /k:'create'[^}]*name:myName/.test(HTML) && /k:'join'[^}]*name:myName/.test(HTML));
   check('both waiting rooms have a roster and a READY button', /id="hostRoster"/.test(HTML) && /id="joinRoster"/.test(HTML) && /id="hostReady"/.test(HTML) && /id="joinReady"/.test(HTML));
