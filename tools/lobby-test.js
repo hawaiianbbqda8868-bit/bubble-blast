@@ -39,7 +39,7 @@ function client(url){
 
 async function serverTests(){
   const port = await freePort();
-  const srv = spawn(process.execPath, [path.join(ROOT, 'relay/server.js')], { env: Object.assign({}, process.env, { PORT: String(port) }), stdio: ['ignore','pipe','pipe'] });
+  const srv = spawn(process.execPath, [path.join(ROOT, 'relay/server.js')], { env: Object.assign({}, process.env, { PORT: String(port), GRACE_MS: '600' }), stdio: ['ignore','pipe','pipe'] });
   await new Promise(res => srv.stdout.on('data', d => { if(String(d).includes('game server on')) res(); }));
   const url = 'ws://127.0.0.1:' + port;
   try {
@@ -115,6 +115,32 @@ async function serverTests(){
     check('game starts once everyone is READY', !!st2 && humans.length === 2);
     check('humans keep their chosen side; bots fill the other', humans.every(p => p.team === humans[0].team) && bots.length === 2 && bots.every(p => p.team !== humans[0].team), JSON.stringify(snap.players.filter(p => p.alive).map(p => [p.isHuman, p.team])));
     for(const c of [ann, bea, cal]) try{ c.ws.terminate(); }catch(e){}
+
+    console.log('server: a tablet in the background keeps its seat, and gets it back');
+    const dan = client(url); await dan.open(); dan.send({ k:'create', cid:'DAN', color:'#f00', bots:1, name:'Dan' }); const jd = await dan.next('joined');
+    const eve = client(url); await eve.open(); eve.send({ k:'join', cid:'EVE', code:jd.code, name:'Eve' }); await eve.next('joined'); await sleep(100);
+    eve.send({ k:'setready', ready:true }); await dan.next('lobby');
+    eve.ws.terminate(); const lbAway = await dan.next('lobby');
+    check('the host sees the dropped joiner as AWAY, seat kept', lbAway.n === 2 && lbAway.players[1].away === true && lbAway.players[1].name === 'Eve', JSON.stringify(lbAway.players));
+    dan.send({ k:'setready', ready:true }); await dan.next('lobby'); dan.send({ k:'start' }); const nr2 = await dan.next('notready');
+    check('START waits for the away player', nr2.waiting.join() === 'Eve', JSON.stringify(nr2.waiting));
+    const eve2 = client(url); await eve2.open(); eve2.send({ k:'join', cid:'EVE', code:jd.code, name:'Eve' }); const je2 = await eve2.next('joined');
+    await dan.next('lobby'); await sleep(60);
+    check('she comes back to the same seat, still READY, flagged as back', je2.slot === 1 && je2.back === true && dan.last('lobby').players[1].ready === true && !dan.last('lobby').players[1].away, JSON.stringify([je2, dan.last('lobby').players[1]]));
+    dan.ws.terminate(); const lbHostAway = await eve2.next('lobby');
+    check('a dropped HOST does not close the room', lbHostAway.players[0].away === true && !eve2.last('closed'));
+    const dan2 = client(url); await dan2.open(); dan2.send({ k:'join', cid:'DAN', code:jd.code, name:'Dan' }); const jd2 = await dan2.next('joined'); await sleep(80);
+    dan2.send({ k:'setopts', diff:'hard' }); const lbBack = await dan2.next('lobby');
+    check('the host returns to seat 0 with host powers', jd2.slot === 0 && lbBack.diff === 'hard' && !lbBack.players[0].away, JSON.stringify([jd2.slot, lbBack.diff]));
+    dan2.send({ k:'start' }); await Promise.all([dan2.next('start'), eve2.next('start')]); await sleep(120);
+    eve2.ws.terminate(); await sleep(150);
+    const eve3 = client(url); await eve3.open(); eve3.send({ k:'join', cid:'EVE', code:jd.code, name:'Eve' }); const je3 = await eve3.next('joined'); const st3 = await eve3.next('start'); await eve3.next('state');
+    check('mid-match: back into the running game with the map', je3.back === true && st3.grid && st3.grid.length > 0 && !dan2.last('closed'));
+    const stranger = client(url); await stranger.open(); stranger.send({ k:'join', cid:'ZED', code:jd.code, name:'Zed' }); const jf = await stranger.next('joinfail');
+    check('a newcomer still cannot join a running match', /already started/.test(jf.reason));
+    dan2.ws.terminate(); const closedMsg = await eve3.next('closed', 2500);
+    check('a host who never comes back closes the room after the grace period', !!closedMsg);
+    for(const c of [dan, dan2, eve, eve2, eve3, stranger]) try{ c.ws.terminate(); }catch(e){}
   } catch(e){ check('server tests ran without error', false, e.message); }
   srv.kill();
 }
@@ -130,6 +156,7 @@ function clientTests(){
   check('single-player starts on the picked map', /world\.reset\(controls, \[myColor\], diff, teams, menuMap\)/.test(HTML));
   check('host start sends the picked map', /k:'start'[^}]*map:menuMap/.test(HTML));
   check('both start panels have a map row', (HTML.match(/class="diffrow maprow( grid)?"/g)||[]).length === 2);
+  check('page rejoins its room when it comes back to the foreground', /visibilitychange/.test(HTML) && /function tryRejoin\(/.test(HTML) && /scheduleRejoin\(0\)/.test(HTML) && /k:'join', cid:myCid, code:roomCode/.test(HTML));
   check('profile: name persisted, sent with create and join', /localStorage\.getItem\('bnbName'\)/.test(HTML) && /k:'create'[^}]*name:myName/.test(HTML) && /k:'join'[^}]*name:myName/.test(HTML));
   check('both waiting rooms have a roster and a READY button', /id="hostRoster"/.test(HTML) && /id="joinRoster"/.test(HTML) && /id="hostReady"/.test(HTML) && /id="joinReady"/.test(HTML));
   try {

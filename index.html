@@ -53,6 +53,8 @@
     background:rgba(6,22,31,.82); color:#cfe6ee; font-size:18px; display:none; }
   #menuBtn.show { display:block; }
   #ver { position:fixed; bottom:7px; right:10px; z-index:60; font-size:11px; color:rgba(255,255,255,.32); }
+  #netBanner { position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:62; padding:8px 16px; border-radius:14px; background:rgba(255,198,61,.92); color:#40230a; font:800 13px Nunito,sans-serif; }
+  #netBanner[hidden] { display:none; }
 
   /* in-game HUD: your sailor's card */
   #hud { position:fixed; left:16px; top:16px; right:74px; z-index:30; display:none; }
@@ -169,6 +171,7 @@
   .seat .rk { font:700 11px Nunito,sans-serif; color:var(--mut); white-space:nowrap; }
   .seat .rd { font:800 11px Nunito,sans-serif; color:var(--green); margin-top:2px; }
   .seat .rd.wait { color:var(--gold); }
+  .seat.away { opacity:.55; }
   .seat .crown { position:absolute; top:-9px; left:10px; font-size:15px; }
   .seat.t0 { box-shadow:inset 4px 0 0 #ff5b5b; } .seat.t1 { box-shadow:inset 4px 0 0 #46c8ff; }
   .status { text-align:center; font:700 14px Nunito,sans-serif; color:var(--mut); min-height:18px; }
@@ -239,6 +242,7 @@
   </div>
 </div></div>
 <div id="ver"></div>
+<div id="netBanner" hidden>Reconnecting…</div>
 
 <div class="pad" id="stick"><div id="knob"></div></div>
 <div class="pad" id="dpad">
@@ -1010,6 +1014,9 @@ function render(){
     if(!p.alive) continue;
     const q=drawPos(p), cx=q.x*TILE+TILE/2, cy=q.y*TILE+TILE/2;
     drawCharacter(p,cx,cy);
+    if(netRole!=='off' && lobby){ const lp=lobby.players.find(q=>q.slot===p.slot);   // a player whose tablet went to the background
+      if(lp && lp.away){ ctx.font='800 10px Nunito,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillStyle='rgba(6,22,31,.85)'; roundRect(cx-22,cy-TILE*0.62-9,44,16,8); ctx.fill(); ctx.fillStyle='#ffc63d'; ctx.fillText('AWAY',cx,cy-TILE*0.62-1); } }
     // trapped bubble overlay — countdown ring (pop = death), wiggle to escape
     if(p.trapped){
       const r=TILE*0.46, frac=Math.max(0,p.trapTimer/TRAP_TIME), danger=p.trapTimer<1.0;
@@ -1060,7 +1067,7 @@ function rid(){ return Math.random().toString(36).slice(2,9); }
 // gives it back its seat instead of counting it as a new human.
 let myCid = (function(){ try{ let c=localStorage.getItem('bnbCid'); if(!c){ c=rid()+rid(); localStorage.setItem('bnbCid',c); } return c; }catch(e){ return rid()+rid(); } })();
 function wsSend(o){ if(ws && ws.readyState===1){ try{ ws.send(JSON.stringify(o)); }catch(e){} } }
-function leaveNet(){ pred=null; if(ws){ ws.onopen=ws.onmessage=ws.onclose=ws.onerror=null; try{ ws.close(); }catch(e){} } ws=null; netRole='off'; mySlot=0; lobby=null; myReady=false; showJoinRoom(false); }
+function leaveNet(){ pred=null; roomCode=''; clearTimeout(rejoinTimer); rejoinTries=0; document.getElementById('netBanner').hidden=true; if(ws){ ws.onopen=ws.onmessage=ws.onclose=ws.onerror=null; try{ ws.close(); }catch(e){} } ws=null; netRole='off'; mySlot=0; lobby=null; myReady=false; showJoinRoom(false); }
 function applyMap(m){ grid=m.grid.map(s=>s.split('').map(Number)); decor=new Map(m.decor||[]); theme=m.theme||'pirate'; shipCenter=m.shipCenter||null; }
 
 // ---- the waiting room (泡泡堂-style): seats, 准备 READY, and a side to pick with teams on ----
@@ -1082,11 +1089,11 @@ function seatHtml(p){
   // seats in slot order: humans where they sit, bots in the first empty seats (as the server deals them), the rest open
   if(p.kind==='empty') return '<div class="seat empty">OPEN SEAT</div>';
   if(p.kind==='bot') return '<div class="seat bot'+(lobby.teams&&p.team!=null?' t'+p.team:'')+'"><div class="av bot">🤖</div><div class="info"><div class="nm">Bot</div><div class="rk">'+(lobby.diff||'normal').replace(/^\w/,c=>c.toUpperCase())+' skill</div><div class="rd">READY</div></div></div>';
-  const cls='seat human'+(p.slot===mySlot?' me':'')+(p.ready?' ready':'')+(lobby.teams&&p.team!=null?' t'+p.team:'');
+  const cls='seat human'+(p.slot===mySlot?' me':'')+(p.ready&&!p.away?' ready':'')+(p.away?' away':'')+(lobby.teams&&p.team!=null?' t'+p.team:'');
   const esc=String(p.name||'Sailor').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   return '<div class="'+cls+'">'+(p.host?'<span class="crown">👑</span>':'')+'<div class="av" style="--cap:'+p.color+'"></div>'
     +'<div class="info"><div class="nm">'+esc+(p.slot===mySlot?' (you)':'')+'</div><div class="rk">'+rankOf(p.wins|0).split(' ')[0]+' · '+(p.wins|0)+'🏆</div>'
-    +'<div class="rd'+(p.ready?'':' wait')+'">'+(p.ready?'READY':'WAITING…')+'</div></div></div>';
+    +'<div class="rd'+(p.ready&&!p.away?'':' wait')+'">'+(p.away?'AWAY':p.ready?'READY':'WAITING…')+'</div></div></div>';
 }
 function renderRoster(){
   if(!lobby) return;
@@ -1101,27 +1108,34 @@ function renderRoster(){
   for(const side of ['host','join']){ set(side+'Sailors', lobby.n+' <small>/ '+lobby.cap+'</small>'); set(side+'Bots', String(lobby.bots)); set(side+'Map', mp?mp.name:'—'); }
   set('joinSummary', (lobby.diff||'normal').replace(/^\w/,c=>c.toUpperCase())+' bots · '+(lobby.teams?'Teams':'Free for all')+' · only the host can change the rules');
   const hs=document.getElementById('hostStart'); if(hs){ hs.disabled=!canStart(lobby.players); }
-  const waiting=lobby.players.filter(p=>!p.ready).map(p=>p.name);
+  const waiting=lobby.players.filter(p=>!p.ready||p.away).map(p=>p.name);
   const ready=canStart(lobby.players);
   const who=waiting.map(n=>'<b>'+String(n).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))+'</b>').join(', ');
-  if(netRole==='host') document.getElementById('hostStatus').innerHTML = ready ? 'Everyone is ready — tap START' : 'Waiting on '+who+' to ready up';
-  else document.getElementById('joinRoomStatus').innerHTML = ready ? 'Everyone is ready — waiting for the host to start…' : (myReady ? 'Waiting on '+who+' to ready up' : 'Press READY when you are set');
+  const awayNames=lobby.players.filter(p=>p.away).map(p=>'<b>'+String(p.name).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))+'</b>');
+  const hostAway=lobby.players.some(p=>p.host&&p.away);
+  const line = ready ? null : awayNames.length ? (hostAway && netRole!=='host' ? 'The host stepped away — waiting for them to come back' : 'Waiting on '+awayNames.join(', ')+' to come back') : 'Waiting on '+who+' to ready up';
+  if(netRole==='host') document.getElementById('hostStatus').innerHTML = ready ? 'Everyone is ready — tap START' : line;
+  else document.getElementById('joinRoomStatus').innerHTML = ready ? 'Everyone is ready — waiting for the host to start…' : (myReady || awayNames.length ? line : 'Press READY when you are set');
   syncReadyBtns();
 }
 function showJoinRoom(on){ const b=document.getElementById('joinBrowse'), r=document.getElementById('joinRoom'); if(b) b.classList.toggle('show',!on); if(r) r.classList.toggle('show',on); }
 
 function onServerMsg(ev){
   let d; try{ d=JSON.parse(ev.data); }catch(e){ return; }
-  if(d.k==='joined'){ mySlot=d.slot; roomCode=d.code; myReady=false; syncReadyBtns();
+  if(d.k==='joined'){ mySlot=d.slot; roomCode=d.code; rejoinTries=0; clearTimeout(rejoinTimer); document.getElementById('netBanner').hidden=true;
+    if(d.back){ if(state==='playing') return; }                            // back in the match: nothing to redraw here
+    if(!d.back) myReady=false; syncReadyBtns();
     if(netRole==='host'){ document.getElementById('roomCode').textContent=d.code; document.getElementById('hostStatus').textContent='Share the code, then tap START'; }
     else { document.getElementById('joinRoomCode').textContent=d.code; showJoinRoom(true); document.getElementById('joinRoomStatus').textContent='Press READY when you are set'; }
   }
   else if(d.k==='lobby'){ lobby=d; if(typeof d.bots==='number'){ botCount=d.bots; syncBots(); }
+    { const mine=d.players&&d.players.find(p=>p.slot===mySlot); if(mine) myReady=!!mine.ready; }   // the server's word on our own READY (kept across a rejoin)
     const el=document.getElementById('hostLobby'); if(el) el.textContent='Humans: '+d.n+' / '+d.cap+'   ·   Bots: '+d.bots;
     if(netRole==='client'){ if(d.diff){ diff=d.diff; } menuTeams=!!d.teams; syncTeamToggle(); const mp=BB.MAPS[d.map]; if(mp) previewMap(d.map); }
     if(state!=='playing') renderRoster(); }
   else if(d.k==='notready'){ document.getElementById('hostStatus').textContent='Not yet — waiting for READY: '+(d.waiting||[]).join(', '); }
-  else if(d.k==='joinfail'){ document.getElementById('joinStatus').textContent=d.reason||'Could not join.'; netRole='off'; showJoinRoom(false); }
+  else if(d.k==='joinfail'){ if(roomCode && state!=='start'){ giveUp(d.reason||'Could not get back in.'); return; }
+    document.getElementById('joinStatus').textContent=d.reason||'Could not join.'; netRole='off'; showJoinRoom(false); }
   else if(d.k==='start'){ applyMap(d); snaps=[]; snapLag=[]; drawLag=40; simOff=null; teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); predictInit(d); }
   else if(d.k==='state'){ applySnapshot(d); }
   else if(d.k==='closed'){ if(netRole!=='off' && state!=='start'){ toMenu(); document.getElementById('joinStatus').textContent='Host left — room closed.'; } }
@@ -1130,9 +1144,28 @@ function connectServer(onOpen){
   if(ws){ ws.onopen=ws.onmessage=ws.onclose=ws.onerror=null; try{ ws.close(); }catch(e){} }   // never hold two seats from one tablet
   ws=new WebSocket(RELAY_URL); ws.onopen=onOpen; ws.onmessage=onServerMsg; ws.onerror=()=>{};
   // A dropped socket used to leave a stale room on screen. Say so and go back.
-  ws.onclose=()=>{ if(netRole==='off') return; const msg='Connection lost — back to the menu.'; toMenu();
-    document.getElementById('joinStatus').textContent=msg; document.getElementById('hostStatus').textContent=msg; };
+  ws.onclose=()=>{ if(netRole==='off') return; scheduleRejoin(0); };   // a dropped socket is not a decision to leave
 }
+// ---- getting back in: a tablet sent to the background drops its socket; the seat is kept for us ----
+let rejoinTimer=null, rejoinTries=0;
+function tryRejoin(){
+  if(netRole==='off' || !roomCode) return;
+  if(ws && (ws.readyState===0 || ws.readyState===1)) return;               // connecting, or fine already
+  document.getElementById('netBanner').hidden=false;
+  connectServer(()=>wsSend({k:'join', cid:myCid, code:roomCode, color:myColor, name:myName, wins:myWins}));
+}
+function scheduleRejoin(delay){
+  if(netRole==='off' || !roomCode) return;
+  clearTimeout(rejoinTimer);
+  if(rejoinTries>=12){ giveUp('Connection lost — back to the menu.'); return; }   // ~30s of trying while in the foreground
+  rejoinTries++; rejoinTimer=setTimeout(tryRejoin, delay);
+  if(delay===0) return;                                                     // the next try, if this one fails, waits a bit
+}
+function giveUp(msg){ clearTimeout(rejoinTimer); document.getElementById('netBanner').hidden=true; toMenu();
+  document.getElementById('joinStatus').textContent=msg; document.getElementById('hostStatus').textContent=msg; }
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'){ rejoinTries=0; tryRejoin(); } });
+addEventListener('pageshow',()=>{ rejoinTries=0; tryRejoin(); });
+addEventListener('online',()=>{ rejoinTries=0; tryRejoin(); });
 
 // ---- HOST (a client that can pick player count + press START) ----
 function hostGame(){
