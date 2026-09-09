@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v47';
+const CORE_VERSION = 'v48';
 const COLS = 19, ROWS = 17;
 const FUSE = 3.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -37,13 +37,17 @@ const ROLL_GAP = 0.15;              // he never leans more than a quarter of a t
 const DMG_OFF = 0.18;
 // THE TIDE. A match used to drift once the barrels were gone: the board opened
 // up, nobody wanted to commit, and the last minute was slower than the first.
-// The bay floods now — every TIDE_STEP after TIDE_START the sea takes a fresh
-// scatter of tiles ANYWHERE on the board, marking them TIDE_WARN ahead so you
-// can hop clear. Water cannot be walked on, stops a blast, and drowns whoever
-// it catches, so the floor turns to stepping stones and everyone keeps moving.
-// Each wave takes more than the last, which is what finally ends a match.
+// Now the sea sweeps THROUGH the bay: every TIDE_STEP after TIDE_START a wall
+// of water crosses the board from a random side, one line of tiles at a time,
+// and it is gone once it reaches the far wall — the deck it crossed is dry
+// again. It cannot be walked into, it stops a blast, and it drowns whoever it
+// catches, so the whole board runs for the gaps.
+// The wall has SURGE_LANES channels straight through it, in the same rows (or
+// columns) for the length of that surge, so you can see where to stand. Every
+// third surge closes one channel and quickens, until there is a single gap and
+// you have to be in it.
 const TIDE_START = 70, TIDE_STEP = 9, TIDE_WARN = 4;
-const TIDE_BASE = 6, TIDE_GROW = 3;                    // tiles taken by wave 1, and how many more each wave after
+const SURGE_LANES = 3, SURGE_STEP = 0.30, SURGE_FAST = 0.02, SURGE_MIN = 0.18;
 const TIDE_CHOICES = [0, 25, 70, 120];                 // what the start screen offers; 0 = the sea stays out
 // GHOSTS. Being popped used to mean watching the rest of the match. A popped
 // sailor comes back as a ghost: he drifts over walls and water, cannot be hurt
@@ -121,7 +125,8 @@ function makeWorld() {
   let grid, players, bubbles, blasts, powerups, decor, theme, shipCenter;
   let burstCounter = 0, gameState = 'lobby', winnerSlot = -1, diff = 'normal';
   let teamMode = false, winnerTeam = -1, simTime = 0, mapIdx = 0;
-  let tideWave = 0, tideNext = TIDE_START, doomed = [], tideOn = true;   // waves so far, when the next lands, and what it will take
+  let tideWave = 0, tideNext = TIDE_START, doomed = [], tideOn = true;   // surges so far, when the next comes, and the line it takes next
+  let surge = null, pending = null;                                      // the wall crossing the board, and the one being lined up
   let events = [];
 
   const inB = (x,y) => x>=0 && x<COLS && y>=0 && y<ROWS;
@@ -198,7 +203,7 @@ function makeWorld() {
     teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
     buildMap(mapId);
     bubbles=[]; blasts=[]; powerups=[]; burstCounter=0; gameState='playing'; winnerSlot=-1; winnerTeam=-1; events=[]; simTime=0;
-    tideWave=0; doomed=[];
+    tideWave=0; doomed=[]; surge=null; pending=null;
     const ts = (opts && opts.tide!=null) ? opts.tide : TIDE_START;
     tideOn = !(ts===false || !(ts>0));
     tideNext = tideOn ? ts : Infinity;
@@ -439,28 +444,58 @@ function makeWorld() {
   // The tiles the sea takes next. They are chosen once, TIDE_WARN before the
   // wave lands, and stay marked until it does: drawn as water climbing over the
   // deck, and put in the bots' danger set so they hop clear like anyone else.
-  function markTiles(){
-    const free=[];
-    for(let y=1;y<ROWS-1;y++) for(let x=1;x<COLS-1;x++) if(grid[y][x]===FLOOR) free.push(y*COLS+x);
-    if(!free.length) return false;
-    const want=Math.min(free.length, TIDE_BASE + TIDE_GROW*tideWave);           // each wave takes more than the last
-    for(let i=free.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); const t=free[i]; free[i]=free[j]; free[j]=t; }
-    doomed=free.slice(0, want);
+  // Which way the next wall comes, and the channels through it. Chosen TIDE_WARN
+  // early: the line it enters on is marked so you can read the gaps and go.
+  function planSurge(){
+    const horiz = Math.random()<0.5, dir = Math.random()<0.5 ? 1 : -1;
+    const span = horiz ? ROWS : COLS;                                   // the wall runs across this axis
+    const lanes = new Set();
+    const want = Math.max(1, SURGE_LANES - Math.floor(tideWave/3));      // every third surge closes a channel
+    while(lanes.size < want) lanes.add(1 + Math.floor(Math.random()*(span-2)));
+    const along = horiz ? COLS : ROWS;
+    pending = { horiz, dir, lanes, pos: dir>0 ? 1 : along-2, end: dir>0 ? along-1 : 0,
+                every: Math.max(SURGE_MIN, SURGE_STEP - SURGE_FAST*tideWave), t:0, wet:[] };
+    doomed = lineTiles(pending, pending.pos);
     return true;
   }
-  // The marked tiles go under: whatever was on them goes with them, and anyone
-  // standing there drowns. Ghosts float over it.
-  function floodMarked(){
-    for(const t of doomed){
-      const x=t%COLS, y=(t-x)/COLS;
-      if(grid[y][x]===WATER) continue;
-      grid[y][x]=WATER; decor.delete(key(x,y));
-      for(let i=bubbles.length-1;i>=0;i--) if(bubbles[i].x===x&&bubbles[i].y===y){
-        const b=bubbles.splice(i,1)[0]; if(!b.soft && b.owner.active>0) b.owner.active--; }
-      for(let i=powerups.length-1;i>=0;i--) if(powerups[i].x===x&&powerups[i].y===y) powerups.splice(i,1);
+  // The tiles the wall covers on one line: everything but the channels. It washes
+  // over barrels and crates as well as floor, so it reads as one wall — they are
+  // put back untouched behind it. A bubble stands in the stream like a rock.
+  function lineTiles(sg, pos){
+    const out=[];
+    if(pos<1 || pos>(sg.horiz?COLS:ROWS)-2) return out;
+    const span = sg.horiz ? ROWS : COLS;
+    for(let i=1;i<span-1;i++){
+      if(sg.lanes.has(i)) continue;
+      const x = sg.horiz ? pos : i, y = sg.horiz ? i : pos, v = grid[y][x];
+      if((v!==FLOOR && v!==BARREL && v!==CRATE) || bubbleAt(x,y)) continue;
+      out.push(y*COLS+x);
     }
-    doomed=[]; tideWave++;
+    return out;
+  }
+  function wet(sg, tiles){
+    sg.wet = tiles.map(t=>{ const x=t%COLS, y=(t-x)/COLS; const was=grid[y][x]; grid[y][x]=WATER; return [t,was]; });
+  }
+  function dry(sg){ for(const [t,was] of sg.wet){ const x=t%COLS, y=(t-x)/COLS; if(grid[y][x]===WATER) grid[y][x]=was; } sg.wet=[]; }
+  function startSurge(){
+    surge = pending; pending = null;
+    wet(surge, lineTiles(surge, surge.pos));
+    surge.t = surge.every;
+    doomed = lineTiles(surge, surge.pos + surge.dir);                    // the line it takes next
     events.push('tide');
+  }
+  function stepSurge(dt){
+    surge.t -= dt;
+    if(surge.t > 0) return;
+    dry(surge);
+    surge.pos += surge.dir;
+    if(surge.pos === surge.end){                                        // through the far wall, and gone
+      surge = null; doomed = []; tideWave++; tideNext = simTime + TIDE_STEP;
+      return;
+    }
+    wet(surge, lineTiles(surge, surge.pos));
+    surge.t += surge.every;
+    doomed = lineTiles(surge, surge.pos + surge.dir);
   }
   function drown(p){ p.alive=false; p.trapped=false; p.ride=null; events.push('pop'); if(p.isHuman) becomeGhost(p); }
   // Out of the running, still in the game.
@@ -474,9 +509,12 @@ function makeWorld() {
     events=[];
     if(gameState!=='playing') return events;
     simTime+=dt;
-    if(tideOn && tideNext!==Infinity){
-      if(!doomed.length && simTime>=tideNext-TIDE_WARN && !markTiles()) tideNext=Infinity;   // nothing dry left to take
-      if(simTime>=tideNext && doomed.length){ floodMarked(); tideNext=simTime+TIDE_STEP; }
+    if(tideOn){
+      if(surge) stepSurge(dt);
+      else if(tideNext!==Infinity){
+        if(!pending && simTime>=tideNext-TIDE_WARN) planSurge();        // line it up, and show where it enters
+        if(pending && simTime>=tideNext) startSurge();
+      }
     }                                    // stamps snapshots, so a client can draw them evenly however they arrive
     for(const b of bubbles) b.fuse-=dt;
     let popped=true;
@@ -622,7 +660,7 @@ function makeWorld() {
   }
   function snapshot(){
     return { gs:gameState, win:winnerSlot, ev:events, tm:teamMode, wt:winnerTeam, st:Math.round(simTime*1000),
-      tr:tideWave, tt:(tideNext===Infinity ? -1 : Math.max(0, Math.round((tideNext-simTime)*1000))), tw:doomed,
+      tr:tideWave, tt:((tideNext===Infinity || surge) ? -1 : Math.max(0, Math.round((tideNext-simTime)*1000))), tw:doomed,
       grid: grid.map(r=>r.join('')),
       players: players.map(p=>({slot:p.slot,tx:p.tx,ty:p.ty,fx:p.fx,fy:p.fy,tox:p.tox,toy:p.toy,
         t:p.t,moving:p.moving,dir:p.dir,faceX:p.faceX,alive:p.alive,ghost:p.ghost,ghostCd:Math.round(p.ghostCd*10)/10,
@@ -641,7 +679,7 @@ function makeWorld() {
 }
 
 const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, TAP_HOLD, DMG_OFF, SPEED_GAIN, MAX_SPEED, MAX_RANGE, MAX_BUBBLES,
-  FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, TIDE_CHOICES, TIDE_BASE, TIDE_GROW, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
+  FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, TIDE_CHOICES, SURGE_LANES, SURGE_STEP, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
   DROP_POOL, SURPRISE_POOL };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;
