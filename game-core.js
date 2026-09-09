@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v48';
+const CORE_VERSION = 'v50';
 const COLS = 19, ROWS = 17;
 const FUSE = 3.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -43,12 +43,13 @@ const DMG_OFF = 0.18;
 // again. It cannot be walked into, it stops a blast, and it drowns whoever it
 // catches, so the whole board runs for the gaps.
 // The wall has SURGE_LANES channels straight through it, in the same rows (or
-// columns) for the length of that surge, so you can see where to stand. Every
-// third surge closes one channel and quickens, until there is a single gap and
-// you have to be in it.
+// columns) for the length of that surge, so you can see where to stand — often
+// enough that one is always a few tiles away. Every third surge closes one and
+// quickens, down to SURGE_MIN_LANES, which is still a way out.
 const TIDE_START = 70, TIDE_STEP = 9, TIDE_WARN = 4;
-const SURGE_LANES = 3, SURGE_STEP = 0.30, SURGE_FAST = 0.02, SURGE_MIN = 0.18;
-const TIDE_CHOICES = [0, 25, 70, 120];                 // what the start screen offers; 0 = the sea stays out
+const SURGE_LANES = 5, SURGE_MIN_LANES = 2, SURGE_STEP = 0.30, SURGE_FAST = 0.02, SURGE_MIN = 0.18;
+const TIDE_CHOICES = [0, 25, 70, 120];                 // when the first wall comes; 0 = the sea stays out
+const TIDE_GAPS = [5, 9, 15];                          // and how long the calm is between them
 // GHOSTS. Being popped used to mean watching the rest of the match. A popped
 // sailor comes back as a ghost: he drifts over walls and water, cannot be hurt
 // and cannot win, and every GHOST_CD he can leave a ghost bubble that TRAPS
@@ -101,6 +102,12 @@ const MAPS = [
       for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++) set(MIDX+dx,MIDY+dy,'lava');
       [[4,4],[COLS-6,4],[4,ROWS-6],[COLS-6,ROWS-6]].forEach(([cx,cy])=>{ for(let dy=0;dy<2;dy++) for(let dx=0;dx<2;dx++) set(cx+dx,cy+dy,'rock'); });
     } },
+  // Open Water: made for the tide. Almost nothing in the way, so a wall coming
+  // through is a test of reading its channels rather than of digging.
+  { name:'Open Water', theme:'ice', fill:0.26, layout(set){
+      [[MIDX,MIDY]].forEach(([x,y])=>set(x,y,'ice'));
+      [[4,3],[COLS-5,3],[4,ROWS-4],[COLS-5,ROWS-4]].forEach(([x,y])=>set(x,y,'ice'));
+    } },
   { name:'Cross Reef', theme:'pirate', fill:0.74, layout(set){
       for(let y=4;y<=ROWS-5;y++) if(y%2===0) set(MIDX,y,'cannon');
       for(let x=4;x<=COLS-5;x++) if(x%2===0) set(x,MIDY,'cannon');
@@ -125,7 +132,7 @@ function makeWorld() {
   let grid, players, bubbles, blasts, powerups, decor, theme, shipCenter;
   let burstCounter = 0, gameState = 'lobby', winnerSlot = -1, diff = 'normal';
   let teamMode = false, winnerTeam = -1, simTime = 0, mapIdx = 0;
-  let tideWave = 0, tideNext = TIDE_START, doomed = [], tideOn = true;   // surges so far, when the next comes, and the line it takes next
+  let tideWave = 0, tideNext = TIDE_START, doomed = [], tideOn = true, tideGap = TIDE_STEP;   // surges so far, when the next comes, and the line it takes next
   let surge = null, pending = null;                                      // the wall crossing the board, and the one being lined up
   let events = [];
 
@@ -207,6 +214,8 @@ function makeWorld() {
     const ts = (opts && opts.tide!=null) ? opts.tide : TIDE_START;
     tideOn = !(ts===false || !(ts>0));
     tideNext = tideOn ? ts : Infinity;
+    const gp = (opts && opts.gap!=null) ? +opts.gap : TIDE_STEP;
+    tideGap = TIDE_GAPS.includes(gp) ? gp : TIDE_STEP;
     const used=new Set(colors.filter(Boolean));
     const botPool=PALETTE.filter(c=>!used.has(c));
     let bi=0, bp=0;
@@ -450,7 +459,7 @@ function makeWorld() {
     const horiz = Math.random()<0.5, dir = Math.random()<0.5 ? 1 : -1;
     const span = horiz ? ROWS : COLS;                                   // the wall runs across this axis
     const lanes = new Set();
-    const want = Math.max(1, SURGE_LANES - Math.floor(tideWave/3));      // every third surge closes a channel
+    const want = Math.max(SURGE_MIN_LANES, SURGE_LANES - Math.floor(tideWave/3));   // every third surge closes a channel
     while(lanes.size < want) lanes.add(1 + Math.floor(Math.random()*(span-2)));
     const along = horiz ? COLS : ROWS;
     pending = { horiz, dir, lanes, pos: dir>0 ? 1 : along-2, end: dir>0 ? along-1 : 0,
@@ -490,7 +499,7 @@ function makeWorld() {
     dry(surge);
     surge.pos += surge.dir;
     if(surge.pos === surge.end){                                        // through the far wall, and gone
-      surge = null; doomed = []; tideWave++; tideNext = simTime + TIDE_STEP;
+      surge = null; doomed = []; tideWave++; tideNext = simTime + tideGap;
       return;
     }
     wet(surge, lineTiles(surge, surge.pos));
@@ -679,7 +688,7 @@ function makeWorld() {
 }
 
 const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, TAP_HOLD, DMG_OFF, SPEED_GAIN, MAX_SPEED, MAX_RANGE, MAX_BUBBLES,
-  FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, TIDE_CHOICES, SURGE_LANES, SURGE_STEP, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
+  FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, TIDE_CHOICES, TIDE_GAPS, SURGE_LANES, SURGE_MIN_LANES, SURGE_STEP, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
   DROP_POOL, SURPRISE_POOL };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;

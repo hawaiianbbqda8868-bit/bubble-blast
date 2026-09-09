@@ -24,13 +24,17 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 function freePort(){ return new Promise(r => { const s = net.createServer(); s.listen(0, () => { const p = s.address().port; s.close(() => r(p)); }); }); }
 
 // ---- a tiny scripted client: records every message, resolves on the next one of kind k ----
+// A scripted client. next(k) waits for the NEXT message of that kind, so a test
+// can watch a value change across repeated broadcasts. When the server sends two
+// messages back to back (joined then start, for a rejoin into a running match),
+// register the second waiter before awaiting the first.
 function client(url){
   const ws = new WebSocket(url); const msgs = []; const waiters = [];
   ws.on('message', d => { const m = JSON.parse(d); msgs.push(m); for(const w of waiters.splice(0)) w(m); });
   const c = { ws, msgs, closed:false,
     open: () => new Promise((res, rej) => { ws.once('open', res); ws.once('error', rej); }),
     send: o => ws.send(JSON.stringify(o)),
-    next: (k, ms=1500) => new Promise((res, rej) => { const t = setTimeout(() => rej(new Error('timeout waiting for '+k)), ms);
+    next: (k, ms=4000) => new Promise((res, rej) => { const t = setTimeout(() => rej(new Error('timeout waiting for '+k+'; last messages: '+msgs.slice(-4).map(x=>x.k+(x.k==='notready'?' '+JSON.stringify(x.waiting):'')).join(','))), ms);
       const w = m => { if(m.k===k){ clearTimeout(t); res(m); } else waiters.push(w); }; waiters.push(w); }),
     last: k => { for(let i=msgs.length-1;i>=0;i--) if(msgs[i].k===k) return msgs[i]; return null; } };
   ws.on('close', () => { c.closed = true; });
@@ -39,7 +43,7 @@ function client(url){
 
 async function serverTests(){
   const port = await freePort();
-  const srv = spawn(process.execPath, [path.join(ROOT, 'relay/server.js')], { env: Object.assign({}, process.env, { PORT: String(port), GRACE_MS: '1500' }), stdio: ['ignore','pipe','pipe'] });
+  const srv = spawn(process.execPath, [path.join(ROOT, 'relay/server.js')], { env: Object.assign({}, process.env, { PORT: String(port), GRACE_MS: '4000' }), stdio: ['ignore','pipe','pipe'] });   // grace long enough that no reconnect here races the sweep
   await new Promise(res => srv.stdout.on('data', d => { if(String(d).includes('game server on')) res(); }));
   const url = 'ws://127.0.0.1:' + port;
   try {
@@ -135,11 +139,13 @@ async function serverTests(){
     check('the host returns to seat 0 with host powers', jd2.slot === 0 && lbBack.diff === 'hard' && !lbBack.players[0].away, JSON.stringify([jd2.slot, lbBack.diff]));
     dan2.send({ k:'start' }); await Promise.all([dan2.next('start'), eve2.next('start')]); await sleep(120);
     eve2.ws.terminate(); await sleep(150);
-    const eve3 = client(url); await eve3.open(); eve3.send({ k:'join', cid:'EVE', code:jd.code, name:'Eve' }); const je3 = await eve3.next('joined'); const st3 = await eve3.next('start'); await eve3.next('state');
+    const eve3 = client(url); await eve3.open(); eve3.send({ k:'join', cid:'EVE', code:jd.code, name:'Eve' });
+    const startP = eve3.next('start');               // joined and start arrive together — listen for both up front
+    const je3 = await eve3.next('joined'); const st3 = await startP; await eve3.next('state');
     check('mid-match: back into the running game with the map', je3.back === true && st3.grid && st3.grid.length > 0 && !dan2.last('closed'));
     const stranger = client(url); await stranger.open(); stranger.send({ k:'join', cid:'ZED', code:jd.code, name:'Zed' }); const jf = await stranger.next('joinfail');
     check('a newcomer still cannot join a running match', /already started/.test(jf.reason));
-    dan2.ws.terminate(); const closedMsg = await eve3.next('closed', 5000);
+    dan2.ws.terminate(); const closedMsg = await eve3.next('closed', 8000);
     check('a host who never comes back closes the room after the grace period', !!closedMsg);
     for(const c of [dan, dan2, eve, eve2, eve3, stranger]) try{ c.ws.terminate(); }catch(e){}
 
@@ -153,6 +159,11 @@ async function serverTests(){
     check('the host can turn the sea off', ida.last('lobby').tide === 0 && jon.last('lobby').tide === 0);
     ida.send({ k:'setopts', tide:999 }); await ida.next('lobby');
     check('a value nobody offers falls back to the default', ida.last('lobby').tide === BB2.TIDE_START, `tide=${ida.last('lobby').tide}`);
+    const gap = BB2.TIDE_GAPS.find(g => g !== BB2.TIDE_STEP);
+    ida.send({ k:'setopts', gap }); await Promise.all([ida.next('lobby'), jon.next('lobby')]); await sleep(120);
+    check('how often the walls come is a rule too', ida.last('lobby').gap === gap && jon.last('lobby').gap === gap, `gap=${ida.last('lobby').gap}`);
+    ida.send({ k:'setopts', gap:999 }); await ida.next('lobby');
+    check('and it falls back the same way', ida.last('lobby').gap === BB2.TIDE_STEP, `gap=${ida.last('lobby').gap}`);
     for(const c of [ida, jon]) try{ c.ws.terminate(); }catch(e){}
 
     console.log('server: the host can kick');
@@ -178,7 +189,7 @@ function clientTests(){
   const cidDecl = HTML.match(/(?:let|const|var)\s+myCid\s*=[^\n]*\n/);
   const mapDecl = HTML.match(/let\s+menuMap\s*=[^\n]*\n/);
   check('page remembers the picked map (menuMap, persisted)', !!mapDecl && /localStorage/.test(mapDecl[0]));
-  check('single-player starts on the picked map and tide', /world\.reset\(controls, \[myColor\], diff, teams, menuMap, \{ tide:menuTide \}\)/.test(HTML));
+  check('single-player starts on the picked map, tide and wave gap', /world\.reset\(controls, \[myColor\], diff, teams, menuMap, \{ tide:menuTide, gap:menuGap \}\)/.test(HTML));
   check('host start sends the picked map', /k:'start'[^}]*map:menuMap/.test(HTML));
   check('both start panels have a map row', (HTML.match(/class="diffrow maprow( grid)?"/g)||[]).length === 2);
   check('host seats carry a kick button; a kicked page leaves', /data-kick=/.test(HTML) && /k:'kick', slot/.test(HTML) && /d\.k==='kicked'/.test(HTML));

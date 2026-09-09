@@ -148,6 +148,65 @@ console.log('\n2c. The bots run for the channels too\n');
   check('a bot parked in the path gets out of the way', survived === trials, `${survived} of ${trials} survived`);
 }
 
+console.log('\n2d. When it comes, and how often, are rules you pick before the match\n');
+{
+  check('the start screen offers a few starts, one of them off', Array.isArray(BB.TIDE_CHOICES) && BB.TIDE_CHOICES.includes(0) && BB.TIDE_CHOICES.includes(BB.TIDE_START), JSON.stringify(BB.TIDE_CHOICES));
+  check('and a few gaps between walls', Array.isArray(BB.TIDE_GAPS) && BB.TIDE_GAPS.includes(BB.TIDE_STEP) && BB.TIDE_GAPS.length > 1, JSON.stringify(BB.TIDE_GAPS));
+  const early = BB.TIDE_CHOICES.find(v => v > 0 && v < BB.TIDE_START) || 25;
+  const open = w => { const r = w.read(); for (let y = 1; y < BB.ROWS - 1; y++) for (let x = 1; x < BB.COLS - 1; x++) r.grid[y][x] = BB.FLOOR; return r; };
+  const world = (opts) => { const w = BB.makeWorld(); w.reset(new Array(8).fill('none').map((c, i) => i < 3 ? 'local' : c), ['#fff'], 'normal', null, 0, opts); return w; };
+
+  const w = world({ tide: early });
+  const r = open(w);
+  const run = secs => { for (let i = 0; i < Math.round(secs / DT); i++) w.update(DT); };
+  run(early - 2);
+  eq(`nothing yet at ${early - 2}s`, water(r), 0);
+  run(2.4);
+  check(`the first wall comes on the ${early}s setting, not the default`, water(r) > 0, `${water(r)} tiles under water`);
+
+  const off = world({ tide: 0 });
+  const ro = off.read();
+  for (let i = 0; i < Math.round((BB.TIDE_START + 30) / DT); i++) off.update(DT);
+  eq('Off means the sea never comes in', water(ro), 0);
+  eq('with no countdown to show', off.snapshot().tt, -1);
+
+  // the calm between walls, measured from the end of one to the end of the next
+  const gap = BB.TIDE_GAPS.find(g => g !== BB.TIDE_STEP);
+  const g = world({ tide: early, gap });
+  const rg = open(g);
+  // sailors who actually play the game: when the line they are on is marked,
+  // they hop into a channel. That keeps the match alive so the clock can be read.
+  const dodge = () => {
+    const marks = g.snapshot().tw;
+    if (!marks.length) return;
+    const cols = new Set(marks.map(t => t % BB.COLS)), rows = new Set(marks.map(t => Math.floor(t / BB.COLS)));
+    const horiz = cols.size === 1, span = horiz ? BB.ROWS : BB.COLS, used = horiz ? rows : cols;
+    const lanes = []; for (let i = 1; i < span - 1; i++) if (!used.has(i)) lanes.push(i);
+    if (!lanes.length) return;
+    const set = new Set(marks);
+    for (const p of rg.players) {
+      if (!p.alive || p.control !== 'local') continue;
+      if (!set.has(p.ty * BB.COLS + p.tx) && rg.grid[p.ty][p.tx] !== BB.WATER) continue;
+      const lane = lanes[0];
+      if (horiz) { p.ty = p.fy = p.toy = lane; } else { p.tx = p.fx = p.tox = lane; }
+      p.moving = false; p.t = 0;
+    }
+  };
+  const ends = [];
+  let seen = 0;
+  for (let i = 0; i < Math.round((early + gap * 4 + 40) / DT) && ends.length < 2; i++) {
+    dodge();
+    g.update(DT);
+    if (g.snapshot().tr > seen) { seen = g.snapshot().tr; ends.push(i * DT); }
+  }
+  check('sailors who hop into the channels come through it', rg.players.filter(p => p.control === 'local' && p.alive).length >= 2,
+    `${rg.players.filter(p => p.control === 'local' && p.alive).length} of 3 still sailing`);
+  const between = ends.length > 1 ? ends[1] - ends[0] : -1;
+  const crossing = BB.COLS * BB.SURGE_STEP;                       // the widest a wall can take to cross
+  check(`on the ${gap}s setting the walls come ${gap}s apart`, between > gap && between < gap + crossing + 1,
+    `${between.toFixed(1)}s between them (gap ${gap}s plus one crossing)`);
+}
+
 console.log('\n3. No match runs forever\n');
 {
   const { w, r, put, run } = arena(2);
@@ -253,6 +312,7 @@ console.log('\n9. The page shows it\n');
   check('water tiles are drawn', /function drawWater\(/.test(HTML) && /grid\[y\]\[x\]===WATER/.test(HTML));
   check('the tide clock and warning are on screen', /id="hudTide"/.test(HTML) && /id="tideWarn"/.test(HTML));
   check('both setup panels let you pick when it comes', (HTML.match(/class="seg tiderow"/g) || []).length === 2 && /TIDE_CHOICES/.test(HTML));
+  check('and how often it comes', (HTML.match(/class="seg gaprow"/g) || []).length === 2 && /TIDE_GAPS/.test(HTML));
   check('ghosts are drawn see-through, under the living', /if\(!p\.ghost\) continue;/.test(HTML) && /globalAlpha/.test(HTML));
   check('the DROP button becomes a haunt button', /classList\.toggle\('splash'/.test(HTML) && /HAUNT/.test(HTML));
   check('the result waits for the match, not for your own pop', !/!me\.alive && !deadShown/.test(HTML));

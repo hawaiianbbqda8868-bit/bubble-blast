@@ -22,7 +22,8 @@ function send(ws, o){ if(ws.readyState===1){ try{ ws.send(JSON.stringify(o)); }c
 function broadcast(room, o){ const s=JSON.stringify(o); for(const c of room.conns) if(c.ws.readyState===1){ try{ c.ws.send(s); }catch(e){} } }
 const N_SLOTS = BB.MAX_SLOTS; // 8
 function pickMap(v){ const i = v|0; return BB.MAPS[i] ? i : 0; }   // a known map index, never a roll
-function pickTide(v){ const t = v|0; return BB.TIDE_CHOICES.includes(t) ? t : BB.TIDE_START; }   // when the bay floods, 0 = never
+function pickTide(v){ const t = v|0; return BB.TIDE_CHOICES.includes(t) ? t : BB.TIDE_START; }   // when the first wall comes, 0 = never
+function pickGap(v){ const g = v|0; return BB.TIDE_GAPS.includes(g) ? g : BB.TIDE_STEP; }        // and the calm between them
 // The waiting room, as everyone sees it: every seat, who is ready, which team
 // they picked, and the host's settings. Like 泡泡堂: players press 准备, only the
 // host presses 开始, and only once every human is ready.
@@ -30,7 +31,7 @@ function lobbyInfo(room){
   const players = room.conns.map(c => ({ slot:c.slot, name:c.name, color:c.color, wins:c.wins|0, ready:!!c.ready, team:c.team, host:c.slot===0, away:!!c.away }))
     .sort((a,b) => a.slot-b.slot);
   return { k:'lobby', code:room.code, n:room.conns.length, bots:room.bots, cap:N_SLOTS-room.bots, state:room.state,
-           map:room.map, diff:room.diff, teams:!!room.teamMode, tide:room.tide, players };
+           map:room.map, diff:room.diff, teams:!!room.teamMode, tide:room.tide, gap:room.gap, players };
 }
 function allReady(room){ return room.conns.length < 2 || room.conns.every(c => c.ready && !c.away); }
 function notReady(room){ return room.conns.filter(c => !c.ready || c.away).map(c => c.name); }
@@ -58,7 +59,7 @@ function buildControls(room){
 function beginGame(room){
   const { controls, colors, teams } = buildControls(room);
   room.world = BB.makeWorld();
-  room.world.reset(controls, colors, room.diff||'normal', teams, room.map, { tide:room.tide });
+  room.world.reset(controls, colors, room.diff||'normal', teams, room.map, { tide:room.tide, gap:room.gap });
   room.state = 'playing';
   broadcast(room, Object.assign({ k:'start', tm:!!room.teamMode }, room.world.mapMsg()));
   startTick(room);
@@ -111,7 +112,7 @@ wss.on('connection', (ws) => {
     }
     if (m.k === 'create') {
       let code; do { code = makeCode(); } while (rooms.has(code));
-      const room = { code, conns:[], state:'lobby', world:null, tick:null, diff:'normal', teamMode:!!m.teams, bots:Math.min(7,Math.max(0, m.bots==null?3:m.bots)), map:pickMap(m.map), tide:pickTide(m.tide==null?BB.TIDE_START:m.tide) };
+      const room = { code, conns:[], state:'lobby', world:null, tick:null, diff:'normal', teamMode:!!m.teams, bots:Math.min(7,Math.max(0, m.bots==null?3:m.bots)), map:pickMap(m.map), tide:pickTide(m.tide==null?BB.TIDE_START:m.tide), gap:pickGap(m.gap==null?BB.TIDE_STEP:m.gap) };
       rooms.set(code, room);
       seat(room, ws, m, 0);
       return;
@@ -148,12 +149,13 @@ wss.on('connection', (ws) => {
       if (m.teams != null) { room.teamMode = !!m.teams; balanceTeams(room); }
       if (m.map != null) room.map = pickMap(m.map);
       if (m.tide != null) room.tide = pickTide(m.tide);
+      if (m.gap != null) room.gap = pickGap(m.gap);
       if (m.bots != null) room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots|0));
       broadcast(room, lobbyInfo(room)); } return; }
     if (m.k === 'setmap') { if (ws.slot === 0 && room.state === 'lobby') { room.map = pickMap(m.map); broadcast(room, lobbyInfo(room)); } return; }
     if (m.k === 'setbots') { if (ws.slot === 0 && room.state === 'lobby') { room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots||0)); broadcast(room, lobbyInfo(room)); } return; }
     if (m.k === 'start' || m.k === 'restart') { if (ws.slot === 0) {
-      if (m.bots!=null) room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots)); if (m.teams!=null) room.teamMode = !!m.teams; if (m.map!=null) room.map = pickMap(m.map); if (m.tide!=null) room.tide = pickTide(m.tide); room.diff = m.diff || room.diff;
+      if (m.bots!=null) room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots)); if (m.teams!=null) room.teamMode = !!m.teams; if (m.map!=null) room.map = pickMap(m.map); if (m.tide!=null) room.tide = pickTide(m.tide); if (m.gap!=null) room.gap = pickGap(m.gap); room.diff = m.diff || room.diff;
       if (room.state === 'lobby' && !allReady(room)) { send(ws, { k:'notready', waiting:notReady(room) }); return; }   // 开始 only when everyone pressed 准备 (and is here)
       beginGame(room); } return; }
     if (m.k === 'input') { if (room.world && room.state === 'playing') room.world.setInput(ws.slot, { dir:m.dir, bomb:m.bomb, tap:m.tap, half:m.half, seq:m.seq }); return; }
