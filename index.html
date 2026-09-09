@@ -400,10 +400,10 @@
   </div>
 </div>
 
-<script src="game-core.js?v46"></script>
+<script src="game-core.js?v47"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v46';
+const APP_VERSION = 'v47';
 // Last line of defence against a fresh page running an older sim: game-core.js
 // is versioned in its URL, but if the two ever disagree, throw the caches away
 // and reload once rather than play by two different sets of rules.
@@ -568,7 +568,7 @@ function startGame(){ netRole='off'; mySlot=0;
   const teams = menuTeams ? autoTeams(controls) : null;
   teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
   world=BB.makeWorld(); world.reset(controls, [myColor], diff, teams, menuMap, { tide:menuTide }); syncWorld();
-  state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; tideDoom=-1; hideOverlays(); }
+  state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; tideDoom=[]; hideOverlays(); }
 function endGame(win){ state='over'; showResult(win); }
 
 // ====================== INPUT ======================
@@ -1003,18 +1003,17 @@ function render(){
     ctx.fillStyle='rgba(0,0,0,.10)'; ctx.fillRect(px,py+TILE-3,TILE,3);
     ctx.fillStyle='rgba(255,255,255,.05)'; ctx.fillRect(px,py,TILE,2);
   }
-  // the ring the tide takes next: water climbing over the deck, so you can walk off it
-  if(tideDoom>0){
-    const climb=0.35+0.3*Math.sin(now/180), x1=COLS-1-tideDoom, y1=ROWS-1-tideDoom;
-    for(let y=tideDoom;y<=y1;y++) for(let x=tideDoom;x<=x1;x++){
-      if(x!==tideDoom && x!==x1 && y!==tideDoom && y!==y1) continue;
-      if(grid[y][x]===WATER) continue;
-      const px=x*TILE, py=y*TILE;
-      ctx.fillStyle=`rgba(27,111,168,${0.30+0.18*Math.sin(now/180+(x+y))})`;
-      ctx.fillRect(px,py,TILE,TILE);
-      ctx.fillStyle='rgba(255,255,255,.30)';
-      ctx.fillRect(px, py+TILE*(1-climb*0.5), TILE, 2);
-    }
+  // the tiles the tide takes next: water climbing over the deck, so you can hop clear
+  for(const t of tideDoom){
+    const x=t%COLS, y=(t-x)/COLS;
+    if(!grid[y] || grid[y][x]===WATER) continue;
+    const px=x*TILE, py=y*TILE, w=Math.sin(now/170+(x+y));
+    ctx.fillStyle=`rgba(27,111,168,${0.34+0.20*w})`;
+    ctx.fillRect(px,py,TILE,TILE);
+    ctx.fillStyle=`rgba(255,255,255,${0.28+0.14*w})`;
+    ctx.fillRect(px, py+TILE*0.62+w*3, TILE, 2.5);
+    ctx.strokeStyle='rgba(190,235,255,.55)'; ctx.lineWidth=2;
+    ctx.strokeRect(px+1,py+1,TILE-2,TILE-2);
   }
   // indestructible blocks (by decor type) + crates
   for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
@@ -1105,11 +1104,11 @@ function render(){
   updateHud();
 }
 // HUD: your sailor's card (DOM, top-left) — only touched when something changed
-let hudKey='', hudH=0, tideMs=-1, tideRings=0, tideDoom=-1, warnUntil=0;
+let hudKey='', hudH=0, tideMs=-1, tideRings=0, tideDoom=[], warnUntil=0;   // tideDoom: tiles the sea takes next
 // A ring is about to go under: say so, once, in the middle of the screen.
 function tideTick(){
   const w=document.getElementById('tideWarn'), now=performance.now();
-  if(tideDoom>0 && state==='playing') warnUntil=Math.max(warnUntil, now+700);
+  if(tideDoom.length && state==='playing') warnUntil=Math.max(warnUntil, now+700);
   w.hidden = now>warnUntil || state!=='playing';
 }
 function measureHud(){ const h=document.getElementById('hud');
@@ -1233,7 +1232,7 @@ function onServerMsg(ev){
   else if(d.k==='notready'){ document.getElementById('hostStatus').textContent='Not yet — waiting for READY: '+(d.waiting||[]).join(', '); }
   else if(d.k==='joinfail'){ if(roomCode && state!=='start'){ giveUp(d.reason||'Could not get back in.'); return; }
     document.getElementById('joinStatus').textContent=d.reason||'Could not join.'; netRole='off'; showJoinRoom(false); }
-  else if(d.k==='start'){ applyMap(d); snaps=[]; snapLag=[]; drawLag=40; simOff=null; teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; tideDoom=-1; hideOverlays(); predictInit(d); }
+  else if(d.k==='start'){ applyMap(d); snaps=[]; snapLag=[]; drawLag=40; simOff=null; teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; tideDoom=[]; hideOverlays(); predictInit(d); }
   else if(d.k==='state'){ applySnapshot(d); }
   else if(d.k==='closed'){ if(netRole!=='off' && state!=='start'){ toMenu(); document.getElementById('joinStatus').textContent='Host left — room closed.'; } }
 }
@@ -1329,7 +1328,9 @@ let pred=null;                          // { w:local world, hist:[{x,y,at}], mod
 function predictInit(m){
   if(netRole==='off') return;
   const controls=new Array(8).fill('none'); controls[mySlot]='remote'; controls[(mySlot+4)%8]='remote';   // a second sailor keeps the copy 'playing'
-  const w=BB.makeWorld(); w.reset(controls, [], 'normal', null, m.map);
+  // tide:0 — the copy never floods or drowns on its own guesswork; it learns the
+  // water from the snapshots, which is enough to stop you walking into it.
+  const w=BB.makeWorld(); w.reset(controls, [], 'normal', null, m.map, { tide:0 });
   const r=w.read(); if(m.grid) m.grid.forEach((row,y)=>{ const g=r.grid[y]; for(let x=0;x<row.length;x++) g[x]=+row[x]; });
   pred={ w, hist:[], mode:'local' };
 }
@@ -1386,7 +1387,7 @@ function applySnapshot(d){
     drawLag=Math.min(120, Math.max(40, (hi-lo)+8));                     // headroom = the usual jitter spread; a rare spike just extrapolates for a frame
     snaps.push({at, st:d.st, players:d.players}); if(snaps.length>12) snaps.shift();
   }
-  if(typeof d.tt==='number'){ if(d.tr!==tideRings || tideMs<0 || Math.abs(d.tt-tideMs)>250) tideMs=d.tt; tideRings=d.tr; tideDoom=(typeof d.tw==='number')?d.tw:-1; }
+  if(typeof d.tt==='number'){ if(d.tr!==tideRings || tideMs<0 || Math.abs(d.tt-tideMs)>250) tideMs=d.tt; tideRings=d.tr; tideDoom=Array.isArray(d.tw)?d.tw:[]; }
   state=d.gs; winnerSlot=d.win; teamMode=!!d.tm;
   if(state==='playing') hideOverlays();
   if(d.ev) for(const e of d.ev){ const f=sfx[e]; if(f) f(); }   // game sounds from the server
@@ -1430,7 +1431,7 @@ function loop(ts){
       // window. Online this is the server's job instead (see the tap flag in
       // netSendInput) — doing it here as well would cancel taps it has queued.
       if(players[0] && players[0].moving) bufferDir=null;
-      { const sn=world.snapshot(); tideMs=sn.tt; tideRings=sn.tr; tideDoom=sn.tw; }
+      { const sn=world.snapshot(); tideMs=sn.tt; tideRings=sn.tr; tideDoom=sn.tw||[]; }
       // Popping no longer ends your match — you haunt. The result waits for the
       // match itself to finish.
       if(state==='playing' && world.gameState==='over')

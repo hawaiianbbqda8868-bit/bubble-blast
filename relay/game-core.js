@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v46';
+const CORE_VERSION = 'v47';
 const COLS = 19, ROWS = 17;
 const FUSE = 3.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -37,10 +37,13 @@ const ROLL_GAP = 0.15;              // he never leans more than a quarter of a t
 const DMG_OFF = 0.18;
 // THE TIDE. A match used to drift once the barrels were gone: the board opened
 // up, nobody wanted to commit, and the last minute was slower than the first.
-// The bay floods now — one ring of the board turns to water every TIDE_STEP
-// after TIDE_START, from the hull inwards. Water cannot be walked on, stops a
-// blast, and drowns whoever it catches. Every match gets a shape.
-const TIDE_START = 70, TIDE_STEP = 9, TIDE_WARN = 4;   // WARN: how long a ring is marked before it goes under
+// The bay floods now — every TIDE_STEP after TIDE_START the sea takes a fresh
+// scatter of tiles ANYWHERE on the board, marking them TIDE_WARN ahead so you
+// can hop clear. Water cannot be walked on, stops a blast, and drowns whoever
+// it catches, so the floor turns to stepping stones and everyone keeps moving.
+// Each wave takes more than the last, which is what finally ends a match.
+const TIDE_START = 70, TIDE_STEP = 9, TIDE_WARN = 4;
+const TIDE_BASE = 6, TIDE_GROW = 3;                    // tiles taken by wave 1, and how many more each wave after
 const TIDE_CHOICES = [0, 25, 70, 120];                 // what the start screen offers; 0 = the sea stays out
 // GHOSTS. Being popped used to mean watching the rest of the match. A popped
 // sailor comes back as a ghost: he drifts over walls and water, cannot be hurt
@@ -118,7 +121,7 @@ function makeWorld() {
   let grid, players, bubbles, blasts, powerups, decor, theme, shipCenter;
   let burstCounter = 0, gameState = 'lobby', winnerSlot = -1, diff = 'normal';
   let teamMode = false, winnerTeam = -1, simTime = 0, mapIdx = 0;
-  let tideRing = 0, tideNext = TIDE_START;      // rings flooded so far, and when the next one goes under
+  let tideWave = 0, tideNext = TIDE_START, doomed = [], tideOn = true;   // waves so far, when the next lands, and what it will take
   let events = [];
 
   const inB = (x,y) => x>=0 && x<COLS && y>=0 && y<ROWS;
@@ -195,9 +198,10 @@ function makeWorld() {
     teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
     buildMap(mapId);
     bubbles=[]; blasts=[]; powerups=[]; burstCounter=0; gameState='playing'; winnerSlot=-1; winnerTeam=-1; events=[]; simTime=0;
-    tideRing=0;
+    tideWave=0; doomed=[];
     const ts = (opts && opts.tide!=null) ? opts.tide : TIDE_START;
-    tideNext = (ts===false || !(ts>0)) ? Infinity : ts;
+    tideOn = !(ts===false || !(ts>0));
+    tideNext = tideOn ? ts : Infinity;
     const used=new Set(colors.filter(Boolean));
     const botPool=PALETTE.filter(c=>!used.has(c));
     let bi=0, bp=0;
@@ -432,27 +436,31 @@ function makeWorld() {
         if(p.inTap){ p.inHeld=[]; p.inTap=false; p._doneSeq=p.inSeq; } } }   // a tap buys one step
   }
 
-  const onRing = (x,y,r) => { const x1=COLS-1-r, y1=ROWS-1-r;
-    return x>=r && x<=x1 && y>=r && y<=y1 && (x===r || x===x1 || y===r || y===y1); };
-  // The ring that goes under next, once it is close enough to matter. Everyone
-  // gets TIDE_WARN to walk off it: it is drawn as rising water, and the bots
-  // treat it as somewhere they must not be.
-  function doomedRing(){ return (tideNext!==Infinity && tideNext-simTime<=TIDE_WARN) ? tideRing+1 : -1; }
-  // One ring of the bay goes under: everything on it is water now, and anyone
+  // The tiles the sea takes next. They are chosen once, TIDE_WARN before the
+  // wave lands, and stay marked until it does: drawn as water climbing over the
+  // deck, and put in the bots' danger set so they hop clear like anyone else.
+  function markTiles(){
+    const free=[];
+    for(let y=1;y<ROWS-1;y++) for(let x=1;x<COLS-1;x++) if(grid[y][x]===FLOOR) free.push(y*COLS+x);
+    if(!free.length) return false;
+    const want=Math.min(free.length, TIDE_BASE + TIDE_GROW*tideWave);           // each wave takes more than the last
+    for(let i=free.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); const t=free[i]; free[i]=free[j]; free[j]=t; }
+    doomed=free.slice(0, want);
+    return true;
+  }
+  // The marked tiles go under: whatever was on them goes with them, and anyone
   // standing there drowns. Ghosts float over it.
-  function floodRing(r){
-    const x0=r, x1=COLS-1-r, y0=r, y1=ROWS-1-r;
-    if(x0>x1 || y0>y1) return false;
-    for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
-      if(x!==x0 && x!==x1 && y!==y0 && y!==y1) continue;                        // the ring, not the whole rectangle
+  function floodMarked(){
+    for(const t of doomed){
+      const x=t%COLS, y=(t-x)/COLS;
       if(grid[y][x]===WATER) continue;
       grid[y][x]=WATER; decor.delete(key(x,y));
       for(let i=bubbles.length-1;i>=0;i--) if(bubbles[i].x===x&&bubbles[i].y===y){
         const b=bubbles.splice(i,1)[0]; if(!b.soft && b.owner.active>0) b.owner.active--; }
       for(let i=powerups.length-1;i>=0;i--) if(powerups[i].x===x&&powerups[i].y===y) powerups.splice(i,1);
     }
+    doomed=[]; tideWave++;
     events.push('tide');
-    return true;
   }
   function drown(p){ p.alive=false; p.trapped=false; p.ride=null; events.push('pop'); if(p.isHuman) becomeGhost(p); }
   // Out of the running, still in the game.
@@ -466,7 +474,10 @@ function makeWorld() {
     events=[];
     if(gameState!=='playing') return events;
     simTime+=dt;
-    if(simTime>=tideNext){ if(floodRing(++tideRing)) tideNext=simTime+TIDE_STEP; else tideNext=Infinity; }                                    // stamps snapshots, so a client can draw them evenly however they arrive
+    if(tideOn && tideNext!==Infinity){
+      if(!doomed.length && simTime>=tideNext-TIDE_WARN && !markTiles()) tideNext=Infinity;   // nothing dry left to take
+      if(simTime>=tideNext && doomed.length){ floodMarked(); tideNext=simTime+TIDE_STEP; }
+    }                                    // stamps snapshots, so a client can draw them evenly however they arrive
     for(const b of bubbles) b.fuse-=dt;
     let popped=true;
     while(popped){ popped=false;
@@ -474,9 +485,7 @@ function makeWorld() {
     }
     for(let i=blasts.length-1;i>=0;i--){ blasts[i].timer-=dt; if(blasts[i].timer<=0) blasts.splice(i,1); }
     const danger=new Set();
-    const doom=doomedRing();                        // the sea is as dangerous as a fuse
-    if(doom>0) for(let y=doom;y<=ROWS-1-doom;y++) for(let x=doom;x<=COLS-1-doom;x++)
-      if(onRing(x,y,doom) && grid[y][x]===FLOOR) danger.add(key(x,y));
+    for(const t of doomed){ const x=t%COLS; danger.add(key(x,(t-x)/COLS)); }   // the sea is as dangerous as a fuse
     for(const bl of blasts) danger.add(key(bl.x,bl.y));
     for(const b of bubbles) for(const c of blastCells(b.x,b.y,b.range)) danger.add(key(c.x,c.y));
     for(const p of players){
@@ -545,7 +554,7 @@ function makeWorld() {
       }
     }
     for(const p of players){                         // the tide takes whoever it finds, mid-step or not
-      if(!p.alive || p.ghost) continue;
+      if(!tideOn || !p.alive || p.ghost) continue;
       const t=tileOf(p);
       if(inB(t.x,t.y) && grid[t.y][t.x]===WATER) drown(p);
     }
@@ -613,7 +622,7 @@ function makeWorld() {
   }
   function snapshot(){
     return { gs:gameState, win:winnerSlot, ev:events, tm:teamMode, wt:winnerTeam, st:Math.round(simTime*1000),
-      tr:tideRing, tt:(tideNext===Infinity ? -1 : Math.max(0, Math.round((tideNext-simTime)*1000))), tw:doomedRing(),
+      tr:tideWave, tt:(tideNext===Infinity ? -1 : Math.max(0, Math.round((tideNext-simTime)*1000))), tw:doomed,
       grid: grid.map(r=>r.join('')),
       players: players.map(p=>({slot:p.slot,tx:p.tx,ty:p.ty,fx:p.fx,fy:p.fy,tox:p.tox,toy:p.toy,
         t:p.t,moving:p.moving,dir:p.dir,faceX:p.faceX,alive:p.alive,ghost:p.ghost,ghostCd:Math.round(p.ghostCd*10)/10,
@@ -632,7 +641,7 @@ function makeWorld() {
 }
 
 const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, TAP_HOLD, DMG_OFF, SPEED_GAIN, MAX_SPEED, MAX_RANGE, MAX_BUBBLES,
-  FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, TIDE_CHOICES, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
+  FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, TIDE_CHOICES, TIDE_BASE, TIDE_GROW, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
   DROP_POOL, SURPRISE_POOL };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;

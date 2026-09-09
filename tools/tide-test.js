@@ -36,121 +36,83 @@ function arena(humans = 2) {
 }
 const water = r => r.grid.flat().filter(v => v === BB.WATER).length;
 
-console.log('\n1. The bay floods on a clock, from the hull inwards\n');
+console.log('\n1. The sea takes a scatter of tiles, on a clock, and takes more each time\n');
 {
-  const { w, r, put, run } = arena(2);
-  put(r.players[0], BB.MIDX, BB.MIDY); put(r.players[1], BB.MIDX + 1, BB.MIDY);
-  run(BB.TIDE_START - 1);
-  eq('nothing before TIDE_START', water(r), 0);
-  check('the countdown is in the snapshot', w.snapshot().tt > 0 && w.snapshot().tt <= 1100, `${w.snapshot().tt}ms to go`);
-  run(1.2);
+  const { w, r, put, run } = arena(3);              // three, so one unlucky drowning cannot end the clock
+  put(r.players[0], BB.MIDX, BB.MIDY); put(r.players[1], BB.MIDX + 2, BB.MIDY); put(r.players[2], BB.MIDX - 2, BB.MIDY);
+  run(BB.TIDE_START - BB.TIDE_WARN - 1);
+  eq('nothing before the tide is due', water(r), 0);
+  check('the countdown is in the snapshot', w.snapshot().tt > 0, `${w.snapshot().tt}ms to go`);
+  run(1.5);
+  const marked = w.snapshot().tw.slice();
+  check('tiles are marked before the wave lands', marked.length === BB.TIDE_BASE, `${marked.length} marked`);
+  check('and they are scattered, not one edge', new Set(marked.map(t => t % BB.COLS)).size > 1 && new Set(marked.map(t => Math.floor(t / BB.COLS))).size > 1,
+    marked.map(t => (t % BB.COLS) + ',' + Math.floor(t / BB.COLS)).join(' '));
+  run(BB.TIDE_WARN + 0.2);
+  check('the wave takes exactly the tiles it marked', marked.every(t => r.grid[Math.floor(t / BB.COLS)][t % BB.COLS] === BB.WATER) && water(r) === marked.length,
+    `${water(r)} under, ${marked.length} marked`);
+  eq('the board is not eaten from the outside in', r.grid[1].every(v => v === BB.WATER), false);
   const first = water(r);
-  check('the first ring goes under', first > 0 && w.snapshot().tr === 1, `${first} tiles, ring ${w.snapshot().tr}`);
-  const ring1 = [[1, 1], [BB.COLS - 2, 1], [1, BB.ROWS - 2], [BB.COLS - 2, BB.ROWS - 2], [5, 1]];
-  check('it is the outermost playable ring', ring1.every(([x, y]) => r.grid[y][x] === BB.WATER), 'corners and edges');
-  eq('the middle is still dry', r.grid[BB.MIDY][BB.MIDX], BB.FLOOR);
-  run(BB.TIDE_STEP);
-  check('the next ring follows one step later', water(r) > first && w.snapshot().tr === 2, `${water(r)} tiles, ring ${w.snapshot().tr}`);
+  run(BB.TIDE_STEP + 0.4);
+  check('the next wave takes more than the first', water(r) - first > first, `wave 1 took ${first}, wave 2 took ${water(r) - first}`);
 }
 
-console.log('\n1b. The ring it takes next is marked first — nobody drowns unwarned\n');
+console.log('\n2. Nothing ever goes under unannounced\n');
+{
+  const { w, r, put, run } = arena(4);
+  [0, 1, 2, 3].forEach(i => put(r.players[i], BB.MIDX - 3 + i * 2, BB.MIDY));
+  run(BB.TIDE_START - BB.TIDE_WARN - 1);
+  let surprises = 0, waves = 0, wasWater = new Set(), wasMarked = new Set();
+  for (let i = 0; i < Math.round(BB.TIDE_STEP * 4 / DT); i++) {
+    const before = new Set(wasWater), marks = new Set(wasMarked);
+    w.update(DT);
+    const now = new Set(); r.grid.forEach((row, y) => row.forEach((v, x) => { if (v === BB.WATER) now.add(y * BB.COLS + x); }));
+    for (const t of now) if (!before.has(t) && !marks.has(t)) surprises++;
+    if (now.size > before.size) waves++;
+    wasWater = now; wasMarked = new Set(w.snapshot().tw);
+  }
+  check('every tile that went under was marked first', surprises === 0, `${surprises} surprises over ${waves} waves`);
+  check('and several waves landed', waves >= 3, `${waves} waves`);
+}
+
+console.log('\n2b. Water is not a place you can be\n');
 {
   const { w, r, put, run } = arena(2);
-  put(r.players[0], BB.MIDX, BB.MIDY); put(r.players[1], BB.MIDX + 2, BB.MIDY);
-  run(BB.TIDE_START - BB.TIDE_WARN - 2);
-  eq('nothing is marked while the tide is far off', w.snapshot().tw, -1);
-  run(3);                                          // now inside the warning window
-  eq('the next ring is marked before it goes under', w.snapshot().tw, 1);
-  const warned = w.snapshot().tw;
-  run(BB.TIDE_WARN);
-  check('and it is that ring that floods', r.grid[warned][warned] === BB.WATER && w.snapshot().tr === warned, `ring ${warned}`);
+  const p = r.players[0];
+  put(p, 5, 5); put(r.players[1], BB.MIDX, BB.MIDY);
+  r.grid[5][6] = BB.WATER;                          // the sea took the tile next to him
+  p.inHeld = ['right']; p.inSeq = 1;
+  run(1.5);
+  eq('you cannot walk into it', [p.tx, p.ty], [5, 5]);
+  p.inHeld = []; p.inSeq = 2;
+  r.bubbles.push({ x: 5, y: 5, fuse: 0.02, range: 6, owner: p });
+  w.update(DT);
+  check('a blast stops at the waterline', !r.blasts.some(bl => bl.x > 6 && bl.y === 5), `${r.blasts.filter(bl => bl.y === 5).map(bl => bl.x).join(',')}`);
+  const { w: w2, r: r2, put: put2, run: run2 } = arena(2);
+  const q = r2.players[0];
+  put2(q, 5, 5); put2(r2.players[1], BB.MIDX, BB.MIDY);
+  r2.grid[5][5] = BB.WATER;                         // it took the tile under him
+  run2(0.2);
+  check('standing in it drowns you', !q.alive && q.ghost === true, `alive=${q.alive}`);
 }
+
+console.log('\n2c. The bots hop clear of what is marked\n');
 {
-  // The spawns sit on ring 1, so this is the case that ended matches the moment
-  // the tide arrived: a bot parked on the outer ring must walk inland. Bots pick
-  // where to roam at random, so this is a tally, not a single run.
-  let survived = 0, fled = 0;
-  for (let trial = 0; trial < 6; trial++) {
+  let survived = 0, trials = 6;
+  for (let t = 0; t < trials; t++) {
     const { w, r, put, run } = arena(2);
     const bot = r.players[1];
     bot.control = 'ai'; bot.isHuman = false; bot.botDiff = { move: 0.2, trap: 0, react: 0, esc: 0 }; bot.think = 0;
     put(r.players[0], BB.MIDX, BB.MIDY); put(bot, 5, 5);
-    run(BB.TIDE_START - BB.TIDE_WARN + 0.2);       // the ring is marked now
-    if (w.snapshot().tw !== 1) continue;
-    put(bot, 1, 1); bot.target = null;
-    run(BB.TIDE_WARN - 0.4);
-    const outer = bot.tx === 1 || bot.ty === 1 || bot.tx === BB.COLS - 2 || bot.ty === BB.ROWS - 2;
-    if (!outer) fled++;
-    run(1.0);                                       // the ring goes under
+    run(BB.TIDE_START - BB.TIDE_WARN + 0.2);         // the wave is marked now
+    const marks = w.snapshot().tw;
+    if (!marks.length) continue;
+    const t0 = marks[0], x = t0 % BB.COLS, y = Math.floor(t0 / BB.COLS);
+    put(bot, x, y); bot.target = null;               // park it on a marked tile
+    run(BB.TIDE_WARN + 1.0);
     if (bot.alive) survived++;
   }
-  check('a bot parked on the marked ring heads inland', fled === 6, `${fled} of 6 were clear with 0.4s to spare`);
-  check('the tide does not simply end the match for it', survived === 6, `${survived} of 6 survived`);
-}
-
-{
-  const { w, r, put, run } = arena(2);
-  const stubborn = r.players[0];
-  put(stubborn, 3, 1); put(r.players[1], BB.MIDX, BB.MIDY);
-  run(BB.TIDE_START + 0.3);
-  check('a sailor who ignores the warning still drowns', !stubborn.alive && stubborn.ghost === true, `alive=${stubborn.alive}`);
-}
-{
-  // The bug this all came from: bots parked on the spawn ring drowned together
-  // the instant the tide arrived, and the match ended on the spot.
-  const { w, r, put, run } = arena(4);
-  [[1, 1], [BB.COLS - 2, 1], [1, BB.ROWS - 2], [BB.COLS - 2, BB.ROWS - 2]].forEach(([x, y], i) => {
-    const b = r.players[i];
-    b.control = 'ai'; b.isHuman = false; b.botDiff = { move: 0.2, trap: 0, react: 0, esc: 0 }; b.think = 0;
-    put(b, x, y);
-  });
-  run(BB.TIDE_START + 1);
-  check('four bots in the four corners all get clear', r.players.slice(0, 4).every(p => p.alive), r.players.slice(0, 4).map(p => p.alive).join(','));
-  check('the match is still going', w.gameState === 'playing', w.gameState);
-}
-
-console.log('\n1c. When the tide comes is a rule you pick before the match\n');
-{
-  check('the start screen offers a handful of choices, one of them off', Array.isArray(BB.TIDE_CHOICES) && BB.TIDE_CHOICES.includes(0) && BB.TIDE_CHOICES.includes(BB.TIDE_START), JSON.stringify(BB.TIDE_CHOICES));
-  const early = BB.TIDE_CHOICES.find(v => v > 0 && v < BB.TIDE_START) || 25;
-  const w = BB.makeWorld();
-  w.reset(new Array(8).fill('none').map((c, i) => i < 2 ? 'local' : c), ['#fff'], 'normal', null, 0, { tide: early });
-  const r = w.read();
-  for (let y = 1; y < BB.ROWS - 1; y++) for (let x = 1; x < BB.COLS - 1; x++) r.grid[y][x] = BB.FLOOR;
-  [r.players[0], r.players[1]].forEach((p, i) => { p.tx = p.fx = p.tox = BB.MIDX + i * 2; p.ty = p.fy = p.toy = BB.MIDY; p.moving = false; });
-  const run = secs => { for (let i = 0; i < Math.round(secs / DT); i++) w.update(DT); };
-  run(early - 2);
-  eq(`nothing yet at ${early - 2}s`, water(r), 0);
-  run(2.3);
-  check(`the bay floods on the ${early}s setting, not the default`, water(r) > 0 && w.snapshot().tr === 1, `${water(r)} tiles`);
-
-  const off = BB.makeWorld();
-  off.reset(new Array(8).fill('none').map((c, i) => i < 2 ? 'local' : c), ['#fff'], 'normal', null, 0, { tide: 0 });
-  const ro = off.read();
-  for (let i = 0; i < Math.round((BB.TIDE_START + 30) / DT); i++) off.update(DT);
-  eq('and Off means the sea never comes in', water(ro), 0);
-  eq('with no countdown to show', off.snapshot().tt, -1);
-}
-
-console.log('\n2. Water is not a place you can be\n');
-{
-  const { w, r, put, run } = arena(2);
-  const p = r.players[0];
-  put(p, 2, 1); put(r.players[1], BB.MIDX, BB.MIDY);       // a spare keeps the match running
-  run(BB.TIDE_START + 0.2);                        // ring 1 takes his row
-  check('standing in it drowns you', !p.alive, `alive=${p.alive}`);
-  const { w: w2, r: r2, put: put2, run: run2 } = arena(2);
-  const q = r2.players[0];
-  put2(q, 2, 2); put2(r2.players[1], BB.MIDX, BB.MIDY);    // ring 2: safe for now
-  run2(BB.TIDE_START + 0.2);
-  check('one tile inland is dry', q.alive);
-  q.inHeld = ['up']; q.inSeq = 1;                  // walk into the water
-  run2(1.5);
-  eq('you cannot walk into it', [q.tx, q.ty], [2, 2]);
-  const b = { x: 2, y: 3 };
-  r2.bubbles.push({ x: b.x, y: b.y, fuse: 99, range: 6, owner: q });
-  r2.bubbles[0].fuse = 0; w2.update(DT);
-  check('a blast stops at the waterline', !r2.blasts.some(bl => r2.grid[bl.y] && r2.grid[bl.y][bl.x] === BB.WATER), `${r2.blasts.length} cells`);
+  check('a bot parked on a marked tile gets off it', survived === trials, `${survived} of ${trials} survived`);
 }
 
 console.log('\n3. No match runs forever\n');
@@ -223,9 +185,10 @@ console.log('\n6. A ghost is out of the running, and out of harm\n');
   r.bubbles.push({ x: 5, y: 5, fuse: 0.02, range: 3, owner: foe });
   run(1.0);
   check('a blast passes right through him', gh.ghost === true && !gh.trapped, `trapped=${gh.trapped}`);
-  run(BB.TIDE_START + BB.TIDE_STEP * 3);
+  let t = 0;
+  while (w.gameState === 'playing' && t < 300) { w.update(DT); t += DT; }
   check('and so does the tide', gh.ghost === true, 'still haunting');
-  check('the match ends on the last sailor standing, ghosts aside', w.gameState === 'over');
+  check('the match ends on the last sailor standing, ghosts aside', w.gameState === 'over', `over at ${Math.round(t)}s`);
 }
 
 console.log('\n7. A ghost breaks nothing and hands out nothing\n');
