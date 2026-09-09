@@ -305,7 +305,7 @@
         <div class="switch teamtoggle"></div></div>
     </div>
     <div class="foot">
-      <div class="pickups">Pickups on this map <span>💧 🫧 👟 🏎️ 🐢 🎁</span></div>
+      <div class="pickups">Pickups <span>💧 🫧 👟 🏎️ 🐢 ⛵ ✈️ 🎁</span></div>
       <button class="btn-gold" id="playBtn">START MATCH</button>
     </div>
   </div>
@@ -404,10 +404,10 @@
   </div>
 </div>
 
-<script src="game-core.js?v50"></script>
+<script src="game-core.js?v51"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v50';
+const APP_VERSION = 'v51';
 // Last line of defence against a fresh page running an older sim: game-core.js
 // is versioned in its URL, but if the two ever disagree, throw the caches away
 // and reload once rather than play by two different sets of rules.
@@ -437,8 +437,8 @@ const MAX_SPEED = BB.MAX_SPEED;
 const MAX_RANGE = BB.MAX_RANGE, MAX_BUBBLES = BB.MAX_BUBBLES;
 
 const FLOOR=BB.FLOOR, WALL=BB.WALL, BARREL=BB.BARREL, CRATE=BB.CRATE, WATER=BB.WATER;
-const ITEM_ICON=['💧','🫧','👟','🏎️','🐢','🎁'];   // indexed by the core's PU_* values
-const RIDE_ICON={ car:'🏎️', turtle:'🐢' };
+const ITEM_ICON=['💧','🫧','👟','🏎️','🐢','🎁','⛵','✈️'];   // indexed by the core's PU_* values
+const RIDE_ICON={ car:'🏎️', turtle:'🐢', boat:'⛵', plane:'✈️' };
 
 const SKIN='#fde7cf', SKIN_LT='#fff8ee';   // characters are cream-bodied
 const PALETTE = ['#ff5b5b','#ff9d3a','#ffe24d','#5fe08a','#46c8ff','#7c8cff','#c77dff','#ff7ad1'];
@@ -909,6 +909,38 @@ function drawRide(p,cx,cy){
     roundRect(cx-w/2,base-4,w,h,5); ctx.fill(); ctx.stroke();
     ctx.fillStyle='#e8443c'; roundRect(cx-w/2+3,base+1,w-6,3.5,2); ctx.fill();             // racing stripe
     ctx.fillStyle='rgba(255,255,255,.55)'; roundRect(cx-w/2+3,base-2,w*0.3,3,2); ctx.fill();
+  } else if(p.ride==='boat'){
+    const face = p.dir==='left' ? -1 : 1, w=R*2.4;
+    ctx.fillStyle='rgba(255,255,255,.5)';                                        // a little wake
+    ctx.beginPath(); ctx.ellipse(cx-w*0.55*face,base+4,R*0.5,R*0.16,0,0,7); ctx.fill();
+    ctx.fillStyle='#c96a34'; ctx.strokeStyle='#7a3d18'; ctx.lineWidth=2.5;       // hull
+    ctx.beginPath(); ctx.moveTo(cx-w/2,base-3); ctx.lineTo(cx+w/2,base-3);
+    ctx.lineTo(cx+w*0.32,base+7); ctx.lineTo(cx-w*0.32,base+7); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#f2f6fb'; ctx.strokeStyle='#7a3d18';                          // sail
+    ctx.beginPath(); ctx.moveTo(cx,base-6); ctx.lineTo(cx+R*0.9*face,base-3); ctx.lineTo(cx,base-3); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+  } else if(p.ride==='plane'){
+    // read at tile size: one wide white wing with a red stripe, a pointed nose
+    // and a tail fin. It flies, so it casts a shadow instead of resting on wheels.
+    const face = (p.faceX||1) < 0 ? -1 : 1, w=R*2.7;
+    ctx.fillStyle='rgba(0,0,0,.20)';
+    ctx.beginPath(); ctx.ellipse(cx,base+8,R*0.85,R*0.22,0,0,7); ctx.fill();
+    ctx.fillStyle='#f6fafd'; ctx.strokeStyle='#22384a'; ctx.lineWidth=2.5;
+    ctx.beginPath();
+    ctx.moveTo(cx-w/2*face, base-6);
+    ctx.lineTo(cx+(w/2-6)*face, base-6);
+    ctx.lineTo(cx+w/2*face, base-1);                                             // nose
+    ctx.lineTo(cx+(w/2-6)*face, base+4);
+    ctx.lineTo(cx-w/2*face, base+4);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#e8443c'; roundRect(Math.min(cx-w/2*face, cx+(w/2-6)*face)+3, base-2, w-9, 3, 1.5); ctx.fill();
+    ctx.fillStyle='#e8443c'; ctx.strokeStyle='#22384a'; ctx.lineWidth=2;         // tail fin
+    ctx.beginPath();
+    ctx.moveTo(cx-(w/2-2)*face, base-6);
+    ctx.lineTo(cx-(w/2+3)*face, base-14);
+    ctx.lineTo(cx-(w/2-7)*face, base-6);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
   } else if(p.ride==='turtle'){
     const face = p.dir==='left' ? -1 : 1;
     ctx.fillStyle='#3f9d5a'; ctx.beginPath(); ctx.ellipse(cx+R*1.2*face,base-2,R*0.28,R*0.22,0,0,7); ctx.fill();  // head

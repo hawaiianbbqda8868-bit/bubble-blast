@@ -21,9 +21,11 @@ const eq = (label, got, want) =>                 // deep, so [10,8] matches [10,
 // An empty floor with our sailor in the middle. Slot 1 is a second human who
 // never presses anything — without him the match would end on the first tick
 // for lack of opponents, and the sim would stop.
-function arena(slot1 = 'local') {
+// opts.tide defaults to false: most of these cases are about one item, and a
+// flooding board is a second rule. The water ones ask for it.
+function arena(slot1 = 'local', opts = { tide:false }) {
   const w = BB.makeWorld();
-  w.reset(['local', slot1, 'none', 'none', 'none', 'none', 'none', 'none'], ['#fff', '#0ff'], 'normal', null, 0, { tide:false });
+  w.reset(['local', slot1, 'none', 'none', 'none', 'none', 'none', 'none'], ['#fff', '#0ff'], 'normal', null, 0, opts);
   const r = w.read();
   for (let y = 1; y < BB.ROWS - 1; y++)
     for (let x = 1; x < BB.COLS - 1; x++) r.grid[y][x] = BB.FLOOR;
@@ -48,6 +50,8 @@ console.log('1. A ride changes how long a tile takes\n');
     ['on foot, speed 5', null, 5, 0.138],
     ['car, speed 0', 'car', 0, 0.140],
     ['car, speed 5', 'car', 5, 0.120],   // floored, so a maxed skater stays steerable
+    ['boat, speed 0', 'boat', 0, 0.230],
+    ['plane, speed 0', 'plane', 0, 0.144],
     ['turtle, speed 0', 'turtle', 0, 0.380],
     ['turtle, speed 5', 'turtle', 5, 0.2622],
   ];
@@ -97,7 +101,7 @@ console.log('\n3. A bubble takes the ride away\n');
 console.log('\n4. The surprise box rolls inside its pool\n');
 {
   const { w, r, p } = arena();
-  const pool = ['range', 'bubble', 'skate', 'car', 'turtle', 'dud'];
+  const pool = ['range', 'bubble', 'skate', 'car', 'turtle', 'boat', 'plane', 'dud'];
   const seen = {};
   for (let i = 0; i < 600; i++) {
     p.range = 1; p.maxBubbles = 1; p.speed = 0; p.ride = null;
@@ -118,11 +122,66 @@ console.log('\n4. The surprise box rolls inside its pool\n');
   eq('the box leaves the floor either way', r.powerups.length, 0);
 }
 
+console.log('\n4b. The boat floats, the plane flies\n');
+{
+  const { w, r, p } = arena('local', { tide:120 });     // the sea is in play, so water can take you
+  const x = p.tx, y = p.ty;
+  r.grid[y][x + 1] = BB.WATER;
+  stepOnce(w, p, 'right');
+  eq('on foot, water is a wall', [p.tx, p.ty], [x, y]);
+  p.ride = 'boat';
+  stepOnce(w, p, 'right');
+  eq('in a boat you sail onto it', [p.tx, p.ty], [x + 1, y]);
+  for (let i = 0; i < 60; i++) w.update(1 / 30);
+  check('and the tide does not take you', p.alive === true && p.ride === 'boat', `alive=${p.alive}`);
+  p.ride = 'plane';
+  for (let i = 0; i < 60; i++) w.update(1 / 30);
+  check('a plane rides it out just the same', p.alive === true && p.ride === 'plane', `alive=${p.alive}`);
+  p.ride = null;
+  for (let i = 0; i < 6; i++) w.update(1 / 30);
+  check('step off the ride over water and you go under', !p.alive, `alive=${p.alive}`);
+}
+{
+  const { w, r, p } = arena();
+  const x = p.tx, y = p.ty;
+  r.grid[y][x + 1] = BB.BARREL;
+  p.ride = 'boat';
+  stepOnce(w, p, 'right');
+  eq('a boat is no good against a barrel', [p.tx, p.ty], [x, y]);
+  p.ride = 'plane';
+  stepOnce(w, p, 'right');
+  eq('a plane goes straight over it', [p.tx, p.ty], [x + 1, y]);
+  eq('and the barrel is untouched', r.grid[y][x + 1], BB.BARREL);
+}
+{
+  // set down when the ride is lost over a block, rather than left inside it
+  const { w, r, p } = arena('local'); const foe = r.players[1];
+  const x = p.tx, y = p.ty;
+  r.grid[y][x + 1] = BB.BARREL;
+  p.ride = 'plane';
+  stepOnce(w, p, 'right');
+  eq('flying over the barrel', [p.tx, p.ty], [x + 1, y]);
+  r.bubbles.push({ x: x + 1, y, fuse: 0.02, range: 1, owner: foe });
+  for (let i = 0; i < 20; i++) w.update(1 / 30);
+  check('bubbled up there, he is set down on clear floor', p.ride === null && r.grid[p.ty][p.tx] === BB.FLOOR,
+    `at ${p.tx},${p.ty} which is ${r.grid[p.ty][p.tx]}`);
+}
+{
+  const { w, r, p } = arena('local', { tide:120 }); const foe = r.players[1];
+  const x = p.tx, y = p.ty;
+  r.grid[y][x + 1] = BB.WATER;
+  p.ride = 'boat';
+  stepOnce(w, p, 'right');
+  r.bubbles.push({ x: x + 1, y, fuse: 0.02, range: 1, owner: foe });
+  for (let i = 0; i < 20; i++) w.update(1 / 30);
+  check('lose the boat at sea and you go under with it', !p.alive, `alive=${p.alive} ride=${p.ride}`);
+}
+
 console.log('\n5. Rides and skates are a treat, not the norm\n');
 {
   const share = (pool, want) => { const total = pool.reduce((a, [, w]) => a + w, 0);
     return pool.filter(([v]) => want.includes(v)).reduce((a, [, w]) => a + w, 0) / total; };
-  const rides = [BB.PU_CAR, BB.PU_TURTLE], skate = [BB.PU_SPEED];
+  const rides = [BB.PU_CAR, BB.PU_TURTLE, BB.PU_BOAT, BB.PU_PLANE], skate = [BB.PU_SPEED];
   const boxShare = share(BB.DROP_POOL, [BB.PU_SURPRISE]);
   // what a burst barrel actually hands you, box rolls included
   const eff = want => share(BB.DROP_POOL, want) + boxShare * share(BB.SURPRISE_POOL, want);

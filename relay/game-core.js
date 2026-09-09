@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v50';
+const CORE_VERSION = 'v51';
 const COLS = 19, ROWS = 17;
 const FUSE = 3.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -47,7 +47,7 @@ const DMG_OFF = 0.18;
 // enough that one is always a few tiles away. Every third surge closes one and
 // quickens, down to SURGE_MIN_LANES, which is still a way out.
 const TIDE_START = 70, TIDE_STEP = 9, TIDE_WARN = 4;
-const SURGE_LANES = 5, SURGE_MIN_LANES = 2, SURGE_STEP = 0.30, SURGE_FAST = 0.02, SURGE_MIN = 0.18;
+const SURGE_LANES = 5, SURGE_MIN_LANES = 2, SURGE_STEP = 0.45, SURGE_FAST = 0.015, SURGE_MIN = 0.30;
 const TIDE_CHOICES = [0, 25, 70, 120];                 // when the first wall comes; 0 = the sea stays out
 const TIDE_GAPS = [5, 9, 15];                          // and how long the calm is between them
 // GHOSTS. Being popped used to mean watching the rest of the match. A popped
@@ -64,18 +64,25 @@ const POWERUP_CHANCE = 0.36, BARREL_FILL = 0.78;
 const MAX_RANGE = 8, MAX_BUBBLES = 8;   // pickup caps, shown in the HUD as x/max
 const FLOOR = 0, WALL = 1, BARREL = 2, CRATE = 3, WATER = 4;   // CRATE: a barrel you can shove one tile; WATER: the tide got here
 const CRATE_SHARE = 0.125;                          // one barrel in eight is pushable
-const PU_RANGE = 0, PU_BUBBLE = 1, PU_SPEED = 2, PU_CAR = 3, PU_TURTLE = 4, PU_SURPRISE = 5;
+const PU_RANGE = 0, PU_BUBBLE = 1, PU_SPEED = 2, PU_CAR = 3, PU_TURTLE = 4, PU_SURPRISE = 5, PU_BOAT = 6, PU_PLANE = 7;
 // What a popped barrel drops, and what the surprise box rolls into (-1 = a dud).
 // Weights, not percentages — rollFrom() normalises them.
 // Water and bubbles are the bread and butter; a ride or a pair of skates is a
 // treat. Rides used to be a quarter of every drop and the board was more
 // vehicle than sailor, so they are roughly halved here and in the box.
-const DROP_POOL     = [[PU_RANGE,32],[PU_BUBBLE,30],[PU_SPEED,11],[PU_CAR,7],[PU_TURTLE,5],[PU_SURPRISE,15]];
-const SURPRISE_POOL = [[PU_RANGE,30],[PU_BUBBLE,30],[PU_SPEED,15],[PU_CAR,10],[PU_TURTLE,5],[-1,10]];
+const DROP_POOL     = [[PU_RANGE,32],[PU_BUBBLE,30],[PU_SPEED,10],[PU_CAR,4],[PU_TURTLE,2],[PU_BOAT,5],[PU_PLANE,2],[PU_SURPRISE,15]];
+const SURPRISE_POOL = [[PU_RANGE,30],[PU_BUBBLE,30],[PU_SPEED,14],[PU_CAR,6],[PU_TURTLE,3],[PU_BOAT,6],[PU_PLANE,3],[-1,8]];
 // Rides are mounted by walking onto them and lost when a bubble catches you.
 // The car has a floor on its tile time so a maxed skater in one is still
-// steerable; the turtle is a hazard you learn to walk around.
-const RIDE = { car:{ mul:0.70, min:0.120 }, turtle:{ mul:1.90, min:0 } };
+// steerable; the turtle is a hazard you learn to walk around. The boat rides
+// out the tide — water is just more sea to it — at the price of being slow.
+// The plane does that and crosses barrels and crates as well, which is the
+// fastest way out of anywhere; lose it over a block and you are set down on the
+// nearest clear tile, lose it at sea and you go under with it.
+const RIDE = { car:{ mul:0.70, min:0.120 }, turtle:{ mul:1.90, min:0 },
+               boat:{ mul:1.15, min:0, floats:true }, plane:{ mul:0.72, min:0.115, floats:true, flies:true } };
+const floats = p => !!(RIDE[p.ride] && RIDE[p.ride].floats);
+const flies  = p => !!(RIDE[p.ride] && RIDE[p.ride].flies);
 const SKIN = '#fde7cf', SKIN_LT = '#fff8ee';
 const PALETTE = ['#ff5b5b','#ff9d3a','#ffe24d','#5fe08a','#46c8ff','#7c8cff','#c77dff','#ff7ad1'];
 const DIRV = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
@@ -149,6 +156,28 @@ function makeWorld() {
   function dmgPoint(p){ const q=posOf(p), l=lean(p); return {x:q.x+l.x, y:q.y+l.y}; }
   // The tile he counts as being in — where his bubble drops, and what the AI sees.
   function tileOf(p){ const q=posOf(p), l=lean(p); return {x:Math.round(q.x-l.x), y:Math.round(q.y-l.y)}; }
+  // Where this sailor may stand: floor for everyone, water if he is afloat, and
+  // barrels and crates too if he is flying over them.
+  function tileOk(p,x,y){
+    if(!inB(x,y) || bubbleAt(x,y)) return false;
+    const v=grid[y][x];
+    if(v===FLOOR) return true;
+    if(v===WATER) return floats(p);
+    if(v===BARREL || v===CRATE) return flies(p);
+    return false;
+  }
+  // Losing a ride over a block would leave him inside it: set him down on the
+  // nearest clear tile. Water is left to the tide — going under is the point.
+  function landRide(p){
+    const t=tileOf(p), v=inB(t.x,t.y)?grid[t.y][t.x]:WALL;
+    if(v!==BARREL && v!==CRATE && v!==WALL) return;
+    for(let r=1;r<=5;r++) for(let dy=-r;dy<=r;dy++) for(let dx=-r;dx<=r;dx++){
+      if(Math.abs(dx)!==r && Math.abs(dy)!==r) continue;
+      const x=t.x+dx, y=t.y+dy;
+      if(inB(x,y) && grid[y][x]===FLOOR && !bubbleAt(x,y)){
+        p.tx=p.fx=p.tox=x; p.ty=p.fy=p.toy=y; p.moving=false; p.t=0; return; }
+    }
+  }
   function canStand(x,y){
     const xs = x%1 ? [Math.floor(x),Math.ceil(x)] : [x];
     const ys = y%1 ? [Math.floor(y),Math.ceil(y)] : [y];
@@ -409,7 +438,8 @@ function makeWorld() {
   // One pickup. The surprise box rolls here, inside the sim, so everyone online
   // sees the same result. It can roll a dud, and never another surprise box.
   function applyItem(p, type){
-    if(type===PU_CAR||type===PU_TURTLE){ p.ride = type===PU_CAR?'car':'turtle'; events.push('ride'); return; }
+    const RIDE_OF={ [PU_CAR]:'car', [PU_TURTLE]:'turtle', [PU_BOAT]:'boat', [PU_PLANE]:'plane' };
+    if(RIDE_OF[type]){ p.ride=RIDE_OF[type]; events.push('ride'); return; }
     if(type===PU_SURPRISE){ events.push('surprise'); const r=rollFrom(SURPRISE_POOL); if(r>=0) applyItem(p,r); return; }
     if(type===PU_RANGE) p.range=Math.min(MAX_RANGE,p.range+1);
     else if(type===PU_BUBBLE) p.maxBubbles=Math.min(MAX_BUBBLES,p.maxBubbles+1);
@@ -442,7 +472,7 @@ function makeWorld() {
     if(dir && (committed || leaning)){ const [dx,dy]=DIRV[dir];
       const nx = p.tx+dx, ny = p.ty+dy;
       if(!leaning && !p.ghost && p.control!=='ai' && inB(nx,ny) && grid[ny][nx]===CRATE) pushCrate(p,nx,ny,dx,dy);
-      if(p.ghost ? inB(nx,ny) : canStand(nx,ny)){                            // a ghost drifts through anything
+      if(p.ghost ? inB(nx,ny) : tileOk(p,nx,ny)){                            // a ghost drifts through anything
         p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir;
         p.stepLen=1; p.tentative=leaning;
         if(dx) p.faceX=dx;                                                   // which way he leans
@@ -485,7 +515,16 @@ function makeWorld() {
   function wet(sg, tiles){
     sg.wet = tiles.map(t=>{ const x=t%COLS, y=(t-x)/COLS; const was=grid[y][x]; grid[y][x]=WATER; return [t,was]; });
   }
-  function dry(sg){ for(const [t,was] of sg.wet){ const x=t%COLS, y=(t-x)/COLS; if(grid[y][x]===WATER) grid[y][x]=was; } sg.wet=[]; }
+  function dry(sg){
+    for(const [t,was] of sg.wet){
+      const x=t%COLS, y=(t-x)/COLS;
+      if(grid[y][x]!==WATER) continue;
+      // a barrel does not come back UNDER a boat: the sea took that one
+      const under = players.some(p=>p.alive && !p.ghost && (()=>{ const q=tileOf(p); return q.x===x && q.y===y; })());
+      grid[y][x] = (under && was!==FLOOR) ? FLOOR : was;
+    }
+    sg.wet=[];
+  }
   function startSurge(){
     surge = pending; pending = null;
     wet(surge, lineTiles(surge, surge.pos));
@@ -601,7 +640,7 @@ function makeWorld() {
       }
     }
     for(const p of players){                         // the tide takes whoever it finds, mid-step or not
-      if(!tideOn || !p.alive || p.ghost) continue;
+      if(!tideOn || !p.alive || p.ghost || floats(p)) continue;              // a boat rides it out
       const t=tileOf(p);
       if(inB(t.x,t.y) && grid[t.y][t.x]===WATER) drown(p);
     }
@@ -619,7 +658,7 @@ function makeWorld() {
       else { p.trapped=true; p.trappedBy=hits[0].id; p.trapTimer=TRAP_TIME; p.struggle=0; p.ride=null;
         p.escapeAt = p.isHuman ? 999 : ((Math.random()<p.botDiff.esc) ? (0.7+Math.random()*1.5) : 999);
         if(p.moving){ const t=tileOf(p); p.tx=t.x; p.ty=t.y; }   // caught mid-step: settle on a tile
-        p.moving=false; events.push('trap'); }
+        p.moving=false; landRide(p); events.push('trap'); }
     }
     // contact pop: a sailor standing on a trapped sailor pops the bubble (enemy=out, teammate=freed)
     for(const pt of players){
@@ -688,7 +727,7 @@ function makeWorld() {
 }
 
 const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, TAP_HOLD, DMG_OFF, SPEED_GAIN, MAX_SPEED, MAX_RANGE, MAX_BUBBLES,
-  FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, TIDE_CHOICES, TIDE_GAPS, SURGE_LANES, SURGE_MIN_LANES, SURGE_STEP, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
+  FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, TIDE_CHOICES, TIDE_GAPS, SURGE_LANES, SURGE_MIN_LANES, SURGE_STEP, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PU_BOAT, PU_PLANE, RIDE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
   DROP_POOL, SURPRISE_POOL };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;
