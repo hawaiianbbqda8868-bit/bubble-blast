@@ -63,8 +63,9 @@
   #hudTide.soon { color:#ffc63d; }
   #bomb.splash { background:radial-gradient(circle at 38% 32%, #cfe6ff, #8fb4d6); box-shadow:0 8px 0 #5b7f9c; }
   #bomb.cooling { filter:grayscale(.6); opacity:.6; }
-  #tideWarn { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:45; pointer-events:none;
-    font:800 30px 'Baloo 2',sans-serif; color:#eaf7fb; text-shadow:0 4px 18px rgba(0,0,0,.7); letter-spacing:2px; }
+  #tideWarn { position:fixed; top:22%; left:50%; transform:translate(-50%,-50%); z-index:45; pointer-events:none;
+    white-space:nowrap; padding:8px 18px; border-radius:16px; background:rgba(6,22,31,.72);
+    font:800 22px 'Baloo 2',sans-serif; color:#8bd8ff; text-shadow:0 3px 12px rgba(0,0,0,.7); letter-spacing:1px; }
   #tideWarn[hidden] { display:none; }
   .hudcard .stats { display:flex; gap:14px; margin-top:9px; }
   .stat { display:flex; align-items:center; gap:5px; }
@@ -395,10 +396,10 @@
   </div>
 </div>
 
-<script src="game-core.js?v44"></script>
+<script src="game-core.js?v45"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v44';
+const APP_VERSION = 'v45';
 // Last line of defence against a fresh page running an older sim: game-core.js
 // is versioned in its URL, but if the two ever disagree, throw the caches away
 // and reload once rather than play by two different sets of rules.
@@ -558,7 +559,7 @@ function startGame(){ netRole='off'; mySlot=0;
   const teams = menuTeams ? autoTeams(controls) : null;
   teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
   world=BB.makeWorld(); world.reset(controls, [myColor], diff, teams, menuMap); syncWorld();
-  state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; hideOverlays(); }
+  state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; tideDoom=-1; hideOverlays(); }
 function endGame(win){ state='over'; showResult(win); }
 
 // ====================== INPUT ======================
@@ -986,6 +987,19 @@ function render(){
     ctx.fillStyle='rgba(0,0,0,.10)'; ctx.fillRect(px,py+TILE-3,TILE,3);
     ctx.fillStyle='rgba(255,255,255,.05)'; ctx.fillRect(px,py,TILE,2);
   }
+  // the ring the tide takes next: water climbing over the deck, so you can walk off it
+  if(tideDoom>0){
+    const climb=0.35+0.3*Math.sin(now/180), x1=COLS-1-tideDoom, y1=ROWS-1-tideDoom;
+    for(let y=tideDoom;y<=y1;y++) for(let x=tideDoom;x<=x1;x++){
+      if(x!==tideDoom && x!==x1 && y!==tideDoom && y!==y1) continue;
+      if(grid[y][x]===WATER) continue;
+      const px=x*TILE, py=y*TILE;
+      ctx.fillStyle=`rgba(27,111,168,${0.30+0.18*Math.sin(now/180+(x+y))})`;
+      ctx.fillRect(px,py,TILE,TILE);
+      ctx.fillStyle='rgba(255,255,255,.30)';
+      ctx.fillRect(px, py+TILE*(1-climb*0.5), TILE, 2);
+    }
+  }
   // indestructible blocks (by decor type) + crates
   for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
     const px=x*TILE, py=y*TILE, v=grid[y][x];
@@ -1075,11 +1089,11 @@ function render(){
   updateHud();
 }
 // HUD: your sailor's card (DOM, top-left) — only touched when something changed
-let hudKey='', hudH=0, tideMs=-1, tideRings=0, warnUntil=0;
+let hudKey='', hudH=0, tideMs=-1, tideRings=0, tideDoom=-1, warnUntil=0;
 // A ring is about to go under: say so, once, in the middle of the screen.
 function tideTick(){
   const w=document.getElementById('tideWarn'), now=performance.now();
-  if(tideMs>=0 && tideMs<=BB.TIDE_WARN*1000 && state==='playing') warnUntil=Math.max(warnUntil, now+700);
+  if(tideDoom>0 && state==='playing') warnUntil=Math.max(warnUntil, now+700);
   w.hidden = now>warnUntil || state!=='playing';
 }
 function measureHud(){ const h=document.getElementById('hud');
@@ -1202,7 +1216,7 @@ function onServerMsg(ev){
   else if(d.k==='notready'){ document.getElementById('hostStatus').textContent='Not yet — waiting for READY: '+(d.waiting||[]).join(', '); }
   else if(d.k==='joinfail'){ if(roomCode && state!=='start'){ giveUp(d.reason||'Could not get back in.'); return; }
     document.getElementById('joinStatus').textContent=d.reason||'Could not join.'; netRole='off'; showJoinRoom(false); }
-  else if(d.k==='start'){ applyMap(d); snaps=[]; snapLag=[]; drawLag=40; simOff=null; teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; hideOverlays(); predictInit(d); }
+  else if(d.k==='start'){ applyMap(d); snaps=[]; snapLag=[]; drawLag=40; simOff=null; teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; tideDoom=-1; hideOverlays(); predictInit(d); }
   else if(d.k==='state'){ applySnapshot(d); }
   else if(d.k==='closed'){ if(netRole!=='off' && state!=='start'){ toMenu(); document.getElementById('joinStatus').textContent='Host left — room closed.'; } }
 }
@@ -1355,7 +1369,7 @@ function applySnapshot(d){
     drawLag=Math.min(120, Math.max(40, (hi-lo)+8));                     // headroom = the usual jitter spread; a rare spike just extrapolates for a frame
     snaps.push({at, st:d.st, players:d.players}); if(snaps.length>12) snaps.shift();
   }
-  if(typeof d.tt==='number'){ if(d.tr!==tideRings || tideMs<0 || Math.abs(d.tt-tideMs)>250) tideMs=d.tt; tideRings=d.tr; }
+  if(typeof d.tt==='number'){ if(d.tr!==tideRings || tideMs<0 || Math.abs(d.tt-tideMs)>250) tideMs=d.tt; tideRings=d.tr; tideDoom=(typeof d.tw==='number')?d.tw:-1; }
   state=d.gs; winnerSlot=d.win; teamMode=!!d.tm;
   if(state==='playing') hideOverlays();
   if(d.ev) for(const e of d.ev){ const f=sfx[e]; if(f) f(); }   // game sounds from the server
@@ -1399,7 +1413,7 @@ function loop(ts){
       // window. Online this is the server's job instead (see the tap flag in
       // netSendInput) — doing it here as well would cancel taps it has queued.
       if(players[0] && players[0].moving) bufferDir=null;
-      { const sn=world.snapshot(); tideMs=sn.tt; tideRings=sn.tr; }
+      { const sn=world.snapshot(); tideMs=sn.tt; tideRings=sn.tr; tideDoom=sn.tw; }
       // Popping no longer ends your match — you haunt. The result waits for the
       // match itself to finish.
       if(state==='playing' && world.gameState==='over')

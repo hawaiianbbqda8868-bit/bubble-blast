@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v44';
+const CORE_VERSION = 'v45';
 const COLS = 19, ROWS = 17;
 const FUSE = 3.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -40,7 +40,7 @@ const DMG_OFF = 0.18;
 // The bay floods now — one ring of the board turns to water every TIDE_STEP
 // after TIDE_START, from the hull inwards. Water cannot be walked on, stops a
 // blast, and drowns whoever it catches. Every match gets a shape.
-const TIDE_START = 70, TIDE_STEP = 9, TIDE_WARN = 3;
+const TIDE_START = 70, TIDE_STEP = 9, TIDE_WARN = 4;   // WARN: how long a ring is marked before it goes under
 // GHOSTS. Being popped used to mean watching the rest of the match. A popped
 // sailor comes back as a ghost: he drifts over walls and water, cannot be hurt
 // and cannot win, and every GHOST_CD he can leave a ghost bubble that TRAPS
@@ -400,7 +400,14 @@ function makeWorld() {
   // very tick a tile lands, so a walk is one continuous motion (see update).
   function startStep(p, danger, dt){
       let dir=null, bubble=false;
-    if(p.control==='ai'){ p.think-=dt; if(p.think<=0){ p.think=0.05; const a=botAct(p,danger); dir=a.dir; bubble=a.bubble; p._dir=dir; } else dir=p._dir; }
+    if(p.control==='ai'){ p.think-=dt;
+      // A bot keeps its last direction between thinks, which is fine mid-tile but
+      // used to walk it into a blast cross — or, once the sea started rising,
+      // straight back onto the ring it had just fled. A cached step into danger
+      // always earns a fresh think.
+      let cached = p.think>0 ? p._dir : null;
+      if(cached){ const [cx,cy]=DIRV[cached]; if(danger.has(key(p.tx+cx,p.ty+cy))) cached=null, p.think=0; }
+      if(p.think<=0){ p.think=0.05; const a=botAct(p,danger); dir=a.dir; bubble=a.bubble; p._dir=dir; } else dir=cached; }
     else { dir=(p.inHeld&&p.inHeld.length)?p.inHeld[p.inHeld.length-1]:null; if(p.inBomb){ bubble=true; p.inBomb=false; } }
     if(bubble) placeBubble(p);
     // One press = one tile. The first tile of a press always goes; a second
@@ -421,6 +428,12 @@ function makeWorld() {
         if(p.inTap){ p.inHeld=[]; p.inTap=false; p._doneSeq=p.inSeq; } } }   // a tap buys one step
   }
 
+  const onRing = (x,y,r) => { const x1=COLS-1-r, y1=ROWS-1-r;
+    return x>=r && x<=x1 && y>=r && y<=y1 && (x===r || x===x1 || y===r || y===y1); };
+  // The ring that goes under next, once it is close enough to matter. Everyone
+  // gets TIDE_WARN to walk off it: it is drawn as rising water, and the bots
+  // treat it as somewhere they must not be.
+  function doomedRing(){ return (tideNext!==Infinity && tideNext-simTime<=TIDE_WARN) ? tideRing+1 : -1; }
   // One ring of the bay goes under: everything on it is water now, and anyone
   // standing there drowns. Ghosts float over it.
   function floodRing(r){
@@ -457,6 +470,9 @@ function makeWorld() {
     }
     for(let i=blasts.length-1;i>=0;i--){ blasts[i].timer-=dt; if(blasts[i].timer<=0) blasts.splice(i,1); }
     const danger=new Set();
+    const doom=doomedRing();                        // the sea is as dangerous as a fuse
+    if(doom>0) for(let y=doom;y<=ROWS-1-doom;y++) for(let x=doom;x<=COLS-1-doom;x++)
+      if(onRing(x,y,doom) && grid[y][x]===FLOOR) danger.add(key(x,y));
     for(const bl of blasts) danger.add(key(bl.x,bl.y));
     for(const b of bubbles) for(const c of blastCells(b.x,b.y,b.range)) danger.add(key(c.x,c.y));
     for(const p of players){
@@ -593,7 +609,7 @@ function makeWorld() {
   }
   function snapshot(){
     return { gs:gameState, win:winnerSlot, ev:events, tm:teamMode, wt:winnerTeam, st:Math.round(simTime*1000),
-      tr:tideRing, tt:(tideNext===Infinity ? -1 : Math.max(0, Math.round((tideNext-simTime)*1000))),
+      tr:tideRing, tt:(tideNext===Infinity ? -1 : Math.max(0, Math.round((tideNext-simTime)*1000))), tw:doomedRing(),
       grid: grid.map(r=>r.join('')),
       players: players.map(p=>({slot:p.slot,tx:p.tx,ty:p.ty,fx:p.fx,fy:p.fy,tox:p.tox,toy:p.toy,
         t:p.t,moving:p.moving,dir:p.dir,faceX:p.faceX,alive:p.alive,ghost:p.ghost,ghostCd:Math.round(p.ghostCd*10)/10,

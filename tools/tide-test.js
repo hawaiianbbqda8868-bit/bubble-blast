@@ -53,6 +53,62 @@ console.log('\n1. The bay floods on a clock, from the hull inwards\n');
   check('the next ring follows one step later', water(r) > first && w.snapshot().tr === 2, `${water(r)} tiles, ring ${w.snapshot().tr}`);
 }
 
+console.log('\n1b. The ring it takes next is marked first — nobody drowns unwarned\n');
+{
+  const { w, r, put, run } = arena(2);
+  put(r.players[0], BB.MIDX, BB.MIDY); put(r.players[1], BB.MIDX + 2, BB.MIDY);
+  run(BB.TIDE_START - BB.TIDE_WARN - 2);
+  eq('nothing is marked while the tide is far off', w.snapshot().tw, -1);
+  run(3);                                          // now inside the warning window
+  eq('the next ring is marked before it goes under', w.snapshot().tw, 1);
+  const warned = w.snapshot().tw;
+  run(BB.TIDE_WARN);
+  check('and it is that ring that floods', r.grid[warned][warned] === BB.WATER && w.snapshot().tr === warned, `ring ${warned}`);
+}
+{
+  // The spawns sit on ring 1, so this is the case that ended matches the moment
+  // the tide arrived: a bot parked on the outer ring must walk inland. Bots pick
+  // where to roam at random, so this is a tally, not a single run.
+  let survived = 0, fled = 0;
+  for (let trial = 0; trial < 6; trial++) {
+    const { w, r, put, run } = arena(2);
+    const bot = r.players[1];
+    bot.control = 'ai'; bot.isHuman = false; bot.botDiff = { move: 0.2, trap: 0, react: 0, esc: 0 }; bot.think = 0;
+    put(r.players[0], BB.MIDX, BB.MIDY); put(bot, 5, 5);
+    run(BB.TIDE_START - BB.TIDE_WARN + 0.2);       // the ring is marked now
+    if (w.snapshot().tw !== 1) continue;
+    put(bot, 1, 1); bot.target = null;
+    run(BB.TIDE_WARN - 0.4);
+    const outer = bot.tx === 1 || bot.ty === 1 || bot.tx === BB.COLS - 2 || bot.ty === BB.ROWS - 2;
+    if (!outer) fled++;
+    run(1.0);                                       // the ring goes under
+    if (bot.alive) survived++;
+  }
+  check('a bot parked on the marked ring heads inland', fled === 6, `${fled} of 6 were clear with 0.4s to spare`);
+  check('the tide does not simply end the match for it', survived === 6, `${survived} of 6 survived`);
+}
+
+{
+  const { w, r, put, run } = arena(2);
+  const stubborn = r.players[0];
+  put(stubborn, 3, 1); put(r.players[1], BB.MIDX, BB.MIDY);
+  run(BB.TIDE_START + 0.3);
+  check('a sailor who ignores the warning still drowns', !stubborn.alive && stubborn.ghost === true, `alive=${stubborn.alive}`);
+}
+{
+  // The bug this all came from: bots parked on the spawn ring drowned together
+  // the instant the tide arrived, and the match ended on the spot.
+  const { w, r, put, run } = arena(4);
+  [[1, 1], [BB.COLS - 2, 1], [1, BB.ROWS - 2], [BB.COLS - 2, BB.ROWS - 2]].forEach(([x, y], i) => {
+    const b = r.players[i];
+    b.control = 'ai'; b.isHuman = false; b.botDiff = { move: 0.2, trap: 0, react: 0, esc: 0 }; b.think = 0;
+    put(b, x, y);
+  });
+  run(BB.TIDE_START + 1);
+  check('four bots in the four corners all get clear', r.players.slice(0, 4).every(p => p.alive), r.players.slice(0, 4).map(p => p.alive).join(','));
+  check('the match is still going', w.gameState === 'playing', w.gameState);
+}
+
 console.log('\n2. Water is not a place you can be\n');
 {
   const { w, r, put, run } = arena(2);
