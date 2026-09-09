@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v51';
+const CORE_VERSION = 'v52';
 const COLS = 19, ROWS = 17;
 const FUSE = 3.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -118,6 +118,32 @@ const MAPS = [
   { name:'Cross Reef', theme:'pirate', fill:0.74, layout(set){
       for(let y=4;y<=ROWS-5;y++) if(y%2===0) set(MIDX,y,'cannon');
       for(let x=4;x<=COLS-5;x++) if(x%2===0) set(x,MIDY,'cannon');
+    } },
+  // Two islands with a channel of open water between them: the middle is the
+  // fast way across and the worst place to be caught.
+  { name:'Twin Isles', theme:'pirate', fill:0.58, layout(set){
+      for(const cx of [5, COLS-6]) for(let y=2;y<=ROWS-3;y++) if(y%4!==0) set(cx,y,'cannon');
+      set(MIDX,2,'cannon'); set(MIDX,ROWS-3,'cannon');
+    } },
+  // Jetties: long shelter running one way, and none at all running the other.
+  { name:'The Docks', theme:'stone', fill:0.62, layout(set){
+      for(let i=0;i<3;i++){ const y=3+i*4;
+        for(let x=2;x<=COLS-3;x++) if(x % (COLS-4) !== (i%2 ? 0 : COLS-5)) set(x,y,'pillar'); }
+    } },
+  // Reef bars on the diagonal — no straight run anywhere, but always a way round.
+  { name:'Coral Reef', theme:'ice', fill:0.66, layout(set){
+      for(let y=2;y<=ROWS-3;y++) for(let x=2;x<=COLS-3;x++)
+        if((x+y)%5===0 && (x*7+y)%3!==0) set(x,y,'ice');
+    } },
+  // A rim of rock around an open floor, with four ways in.
+  { name:'Crater', theme:'lava', fill:0.48, layout(set){
+      const r=4;
+      for(let d=-r;d<=r;d++){
+        if(Math.abs(d)<=1) continue;                                   // the four gates
+        set(MIDX+d,MIDY-r,'rock'); set(MIDX+d,MIDY+r,'rock');
+        set(MIDX-r,MIDY+d,'rock'); set(MIDX+r,MIDY+d,'rock');
+      }
+      for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++) if(dx||dy) set(MIDX+dx,MIDY+dy,'lava');
     } },
 ];
 // render colour palettes per theme (used by the browser; harmless on the server)

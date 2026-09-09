@@ -177,6 +177,26 @@ console.log('\n4b. The boat floats, the plane flies\n');
   check('lose the boat at sea and you go under with it', !p.alive, `alive=${p.alive} ride=${p.ride}`);
 }
 
+console.log('\n4c. Every map is one board, not two\n');
+// A map that walls a spawn off from the others would strand whoever drew that
+// corner. Barrels do not count as walls here — you can always bomb through one.
+{
+  let broken = [];
+  for (let i = 0; i < BB.MAPS.length; i++) {
+    const w = BB.makeWorld();
+    w.reset(new Array(8).fill('none').map((c, k) => k < 2 ? 'local' : c), ['#fff'], 'normal', null, i, { tide:false });
+    const g = w.read().grid, seen = new Set(), start = BB.SPAWNS[0], q = [start];
+    seen.add(start.join(','));
+    while (q.length) { const [x, y] = q.shift();
+      for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) { const nx = x+dx, ny = y+dy, k = nx+','+ny;
+        if (nx < 1 || ny < 1 || nx >= BB.COLS-1 || ny >= BB.ROWS-1 || seen.has(k) || g[ny][nx] === BB.WALL) continue;
+        seen.add(k); q.push([nx, ny]); } }
+    if (!BB.SPAWNS.every(([x, y]) => seen.has(x+','+y))) broken.push(BB.MAPS[i].name);
+  }
+  check('every spawn can reach every other, on every map', broken.length === 0, broken.length ? broken.join(', ') : `${BB.MAPS.length} maps`);
+  check('and no two maps share a name', new Set(BB.MAPS.map(m => m.name)).size === BB.MAPS.length);
+}
+
 console.log('\n5. Rides and skates are a treat, not the norm\n');
 {
   const share = (pool, want) => { const total = pool.reduce((a, [, w]) => a + w, 0);

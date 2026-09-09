@@ -124,13 +124,14 @@
   #mute { position:absolute; top:18px; right:20px; width:44px; height:44px; border:none; border-radius:15px; background:rgba(255,255,255,.08); color:#cfe6ee; font-size:19px; }
 
   /* 02 / 04 settings */
-  .maprow { display:flex; gap:10px; margin-top:12px; }
-  .maprow.grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-  .mapcard { flex:1; min-width:0; border-radius:20px; overflow:hidden; border:3px solid var(--line); background:var(--card); }
+  .maprow { display:grid; grid-template-columns:repeat(auto-fill, minmax(84px, 1fr)); gap:10px; margin-top:12px; }
+  .maprow.grid { grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:12px; }
+  .mapcard { min-width:0; border-radius:20px; overflow:hidden; border:3px solid var(--line); background:var(--card); }
   .mapcard.sel { border-color:var(--gold); }
-  .mapcard .th { height:56px; background-size:24px 24px; background-position:0 0,12px 12px; }
+  .mapcard .th { height:52px; background-size:24px 24px; background-position:0 0,12px 12px; image-rendering:pixelated; }
   .mapcard .nm { padding:7px 3px; font:800 11px/1.15 Nunito,sans-serif; color:#9fc0cd; text-align:center; min-height:34px; display:flex; align-items:center; justify-content:center; }
-  .maprow.grid .mapcard .nm { padding:9px 12px; font-size:14px; text-align:left; }
+  .maprow.grid .mapcard .th { height:56px; }
+  .maprow.grid .mapcard .nm { padding:9px 12px; font-size:13px; text-align:left; }
   .mapcard.sel .nm { color:#fff; }
   .settings { margin-top:20px; background:var(--card); border:2px solid var(--line); border-radius:24px; padding:6px 18px; }
   .row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 0; border-bottom:2px solid rgba(255,255,255,.07); }
@@ -404,10 +405,10 @@
   </div>
 </div>
 
-<script src="game-core.js?v51"></script>
+<script src="game-core.js?v52"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v51';
+const APP_VERSION = 'v52';
 // Last line of defence against a fresh page running an older sim: game-core.js
 // is versioned in its URL, but if the two ever disagree, throw the caches away
 // and reload once rather than play by two different sets of rules.
@@ -459,9 +460,30 @@ function syncProfile(){
   const ch=document.getElementById('profRank'); if(ch) ch.textContent=rankOf(myWins).replace(/ (\w+)$/, (m,w)=>' '+w.toUpperCase());
   const av=document.getElementById('profAv'); if(av) av.style.setProperty('--cap', myColor);
 }
-// a themed checker swatch for map cards, room rows and result rows
+// a themed checker swatch, for room rows and anywhere small
 function mapThumb(theme){ const T=BB.THEMES[theme]||BB.THEMES.pirate; const g='linear-gradient(45deg,'+T.f2+' 25%,transparent 25%,transparent 75%,'+T.f2+' 75%)';
   return 'background-color:'+T.f1+';background-image:'+g+','+g; }
+// A real picture of the map for the picker: ten maps share four themes, so a
+// checker swatch told you nothing. Built once, from the same layout the match
+// will use — walls dark, barrels mid, floor the theme's own colour.
+const mapPreview = (function(){ const cache={};
+  return function(i){
+    if(cache[i]) return cache[i];
+    const m=BB.MAPS[i]; if(!m) return '';
+    const w=BB.makeWorld(); w.reset(new Array(8).fill('none'), [], 'normal', null, i, { tide:0 });
+    const g=w.read().grid, T=BB.THEMES[m.theme]||BB.THEMES.pirate, S=4;
+    const cv=document.createElement('canvas'); cv.width=BB.COLS*S; cv.height=BB.ROWS*S;
+    const c=cv.getContext('2d');
+    c.fillStyle=T.f1; c.fillRect(0,0,cv.width,cv.height);
+    for(let y=0;y<BB.ROWS;y++) for(let x=0;x<BB.COLS;x++){
+      const v=g[y][x];
+      if(v===FLOOR){ if((x+y)%2) { c.fillStyle=T.f2; c.fillRect(x*S,y*S,S,S); } continue; }
+      c.fillStyle = v===WALL ? T.hull : T.crate;
+      c.fillRect(x*S,y*S,S,S);
+    }
+    return (cache[i]='background-image:url('+cv.toDataURL()+');background-size:100% 100%');
+  };
+})();
 function sendProfile(){ if(netRole!=='off') wsSend({k:'profile', name:myName, wins:myWins, color:myColor}); }
 // The map is chosen on the start screen (and remembered) — never rolled at random.
 let menuMap = (function(){ try{ const v=+localStorage.getItem('bnbMap'); return BB.MAPS[v]?v:0; }catch(e){ return 0; } })();
@@ -698,7 +720,7 @@ function setMap(i){ if(!BB.MAPS[i]) return; menuMap=i; try{ localStorage.setItem
   syncMapPick(); previewMap(i); if(netRole==='host') wsSend({k:'setmap', map:i}); }
 document.querySelectorAll('.maprow').forEach(row=>{
   BB.MAPS.forEach((m,i)=>{ const b=document.createElement('div'); b.className='mapcard'; b.dataset.map=i;
-    b.innerHTML='<div class="th" style="'+mapThumb(m.theme)+'"></div><div class="nm">'+m.name+'</div>';
+    b.innerHTML='<div class="th" style="'+mapPreview(i)+'"></div><div class="nm">'+m.name+'</div>';
     b.onclick=()=>setMap(i); row.appendChild(b); }); });
 syncMapPick();
 function syncTeamToggle(){ document.querySelectorAll('.teamtoggle').forEach(e=>e.classList.toggle('sel', menuTeams)); }
