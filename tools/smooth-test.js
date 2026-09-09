@@ -33,15 +33,16 @@ function run({ online, script, rtt = 0, jitter = 0, speed = 0, runMs = 2500, see
   const C = new Function('ctx', `
     const performance = { now: () => ctx.clock }; const requestAnimationFrame = () => {}; let last = 0; const held = []; const BB = ctx.BB; let paused = false; const FUSE = BB.FUSE;
     let pred = null;
-    let wantBubble = false, bufferDir = null, bufferT = 0, inSeq = 0, lastInDir = '_', lastInTap = false, lastInHalf = false, lastInT = 0;
+    let wantBubble = false, bufferDir = null, bufferT = 0, inSeq = 0, lastInDir = '_', lastInTap = false, lastInT = 0;
     let grid, players = ctx.players, bubbles, blasts, powerups; let state = 'playing', mySlot = 0, teamMode = false, winnerSlot = -1, deadShown = false;
-    let netRole = ctx.online ? 'host' : 'off'; const world = ctx.online ? null : ctx.world; let halfMode = false, halfKey = false; const halfOn = () => false;
+    let netRole = ctx.online ? 'host' : 'off'; const world = ctx.online ? null : ctx.world;
     const sfx = new Proxy({}, { get: () => () => {} }); const endGame = () => {}; const ws = { readyState: 1 }; const wsSend = o => ctx.send(o); const mashEscape = () => {};
     const hideOverlays = () => {}, showResult = () => {};
     ${grabLet(/(?:let|const)\s+snaps\s*=[^\n]*\n/)}
     ${grabLet(/let\s+snapLag\s*=[^\n]*\n/)}
     function syncWorld(){ const r = ctx.world.read(); players = r.players; }
-    const render = () => {};
+    const render = () => {}, tideTick = () => {};
+    let tideMs = -1, tideRings = 0;
     ${SRC}
     return { loop, pressDir, releaseDir, snapshot: d => applySnapshot(d), predictInit: m => predictInit(m), drop: () => { wantBubble = true; }, nb: () => (bubbles || []).length, pos: () => { const q = drawPos(players[0]); return q.x + 1000 * q.y; } };`)(ctx);
   if (online && predict) { const mm = world.mapMsg(); mm.grid = world.read().grid.map(r => r.join('')); C.predictInit(mm); }
@@ -54,7 +55,7 @@ function run({ online, script, rtt = 0, jitter = 0, speed = 0, runMs = 2500, see
     if (online) while (toC.length && toC[0][0] <= clock) C.snapshot(toC.shift()[1]);   // snapshots land before the frame draws
     C.loop(clock);
     if (online) {
-      while (toS.length && toS[0][0] <= clock) { const m = toS.shift()[1]; world.setInput(0, { dir: m.dir, bomb: m.bomb, tap: m.tap, half: m.half, seq: m.seq }); }
+      while (toS.length && toS[0][0] <= clock) { const m = toS.shift()[1]; world.setInput(0, { dir: m.dir, bomb: m.bomb, tap: m.tap, seq: m.seq }); }
       acc += FRAME / 1000;
       while (acc >= SDT) { acc -= SDT; world.update(SDT * simRate);                       // simRate: the relay's clock runs a little fast or slow
         while (si < srvActs.length && clock >= srvActs[si][0]) srvActs[si++][1](world);

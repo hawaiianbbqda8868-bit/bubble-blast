@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v42';
+const CORE_VERSION = 'v44';
 const COLS = 19, ROWS = 17;
 const FUSE = 3.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -31,13 +31,21 @@ const LEAN_MAX = 0.25;
 // Rolling from one held direction to the next within this gap is the same
 // walk: "tap or walk?" was already answered, so a corner is not a new lean.
 const ROLL_GAP = 0.15;              // he never leans more than a quarter of a tile in
-// 半身位. A sailor can stop ON the line between two tiles (a half-step), and
-// his damage point sits a little BELOW his centre — a blast catches him only
-// when that point is inside its tile. That one rule gives all three cases:
-//   竖半身  on a vertical line, neither neighbouring column can reach him
-//   横半身  on a horizontal line, the tile ABOVE misses, the one BELOW does not
-//   完美点  on a corner, he can stand still and keep dropping bubbles
+// A sailor leans the way he last walked, and always a little downwards. His
+// bubble drops in the tile he leant AWAY from, and a blast catches him when
+// that leaning point is inside its tile.
 const DMG_OFF = 0.18;
+// THE TIDE. A match used to drift once the barrels were gone: the board opened
+// up, nobody wanted to commit, and the last minute was slower than the first.
+// The bay floods now — one ring of the board turns to water every TIDE_STEP
+// after TIDE_START, from the hull inwards. Water cannot be walked on, stops a
+// blast, and drowns whoever it catches. Every match gets a shape.
+const TIDE_START = 70, TIDE_STEP = 9, TIDE_WARN = 3;
+// GHOSTS. Being popped used to mean watching the rest of the match. A popped
+// sailor comes back as a ghost: he drifts over walls and water, cannot be hurt
+// and cannot win, and every GHOST_CD he can leave a ghost bubble that TRAPS
+// whoever it catches but never pops them. Out of the running, still in the game.
+const GHOST_MOVE = 0.16, GHOST_CD = 5.0, GHOST_RANGE = 1;
 // Skates give diminishing returns: seconds shaved off a tile at each speed level.
 // A flat bonus made top speed 11 tiles/s, which is impossible to steer or stop;
 // this tops out at 0.138 s/tile (~7 tiles/s, 1.45x) while every pickup still helps.
@@ -45,13 +53,16 @@ const SPEED_GAIN = [0, 0.020, 0.036, 0.048, 0.056, 0.062];
 const MAX_SPEED = SPEED_GAIN.length - 1;
 const POWERUP_CHANCE = 0.36, BARREL_FILL = 0.78;
 const MAX_RANGE = 8, MAX_BUBBLES = 8;   // pickup caps, shown in the HUD as x/max
-const FLOOR = 0, WALL = 1, BARREL = 2, CRATE = 3;   // CRATE: a barrel you can shove one tile
+const FLOOR = 0, WALL = 1, BARREL = 2, CRATE = 3, WATER = 4;   // CRATE: a barrel you can shove one tile; WATER: the tide got here
 const CRATE_SHARE = 0.125;                          // one barrel in eight is pushable
 const PU_RANGE = 0, PU_BUBBLE = 1, PU_SPEED = 2, PU_CAR = 3, PU_TURTLE = 4, PU_SURPRISE = 5;
 // What a popped barrel drops, and what the surprise box rolls into (-1 = a dud).
 // Weights, not percentages — rollFrom() normalises them.
-const DROP_POOL     = [[PU_RANGE,22],[PU_BUBBLE,22],[PU_SPEED,18],[PU_CAR,12],[PU_TURTLE,14],[PU_SURPRISE,12]];
-const SURPRISE_POOL = [[PU_RANGE,25],[PU_BUBBLE,25],[PU_SPEED,15],[PU_CAR,15],[PU_TURTLE,15],[-1,5]];
+// Water and bubbles are the bread and butter; a ride or a pair of skates is a
+// treat. Rides used to be a quarter of every drop and the board was more
+// vehicle than sailor, so they are roughly halved here and in the box.
+const DROP_POOL     = [[PU_RANGE,32],[PU_BUBBLE,30],[PU_SPEED,11],[PU_CAR,7],[PU_TURTLE,5],[PU_SURPRISE,15]];
+const SURPRISE_POOL = [[PU_RANGE,30],[PU_BUBBLE,30],[PU_SPEED,15],[PU_CAR,10],[PU_TURTLE,5],[-1,10]];
 // Rides are mounted by walking onto them and lost when a bubble catches you.
 // The car has a floor on its tile time so a maxed skater in one is still
 // steerable; the turtle is a hazard you learn to walk around.
@@ -106,27 +117,22 @@ function makeWorld() {
   let grid, players, bubbles, blasts, powerups, decor, theme, shipCenter;
   let burstCounter = 0, gameState = 'lobby', winnerSlot = -1, diff = 'normal';
   let teamMode = false, winnerTeam = -1, simTime = 0, mapIdx = 0;
+  let tideRing = 0, tideNext = TIDE_START;      // rings flooded so far, and when the next one goes under
   let events = [];
 
   const inB = (x,y) => x>=0 && x<COLS && y>=0 && y<ROWS;
   const key = (x,y) => x+','+y;
   function bubbleAt(x,y){ return bubbles.find(b=>b.x===x&&b.y===y); }
   function passable(x,y){ return inB(x,y) && grid[y][x]===FLOOR && !bubbleAt(x,y); }
+  const solid = v => v===WALL || v===WATER;                  // stops a blast as well as a sailor
   function areAllies(a,b){ return teamMode && a && b && a.team!=null && a.team===b.team; }
-  // Where he actually is, which can be half way between two tiles.
   function posOf(p){ return p.moving ? {x:p.fx+(p.tox-p.fx)*p.t, y:p.fy+(p.toy-p.fy)*p.t} : {x:p.tx,y:p.ty}; }
-  // He leans the way he last walked, and always a little downwards. Everything
-  // about 半身位 falls out of that lean:
-  //   his bubble goes into the tile he leant AWAY from — the one he came from
-  //   a blast there cannot reach him, because his weight is in the next tile
-  //   the downward half never flips, so there is no 下半身
-  //   on a corner his weight lands on the diagonal, which no blast cross covers
+  // Which way his weight is: it decides the tile his bubble drops into and the
+  // point a blast has to reach to catch him.
   function lean(p){ return { x: DMG_OFF*(p.faceX||1), y: DMG_OFF }; }
   function dmgPoint(p){ const q=posOf(p), l=lean(p); return {x:q.x+l.x, y:q.y+l.y}; }
   // The tile he counts as being in — where his bubble drops, and what the AI sees.
   function tileOf(p){ const q=posOf(p), l=lean(p); return {x:Math.round(q.x-l.x), y:Math.round(q.y-l.y)}; }
-  // Standing on a line means standing in two tiles (or four, on a corner):
-  // every one of them has to be clear.
   function canStand(x,y){
     const xs = x%1 ? [Math.floor(x),Math.ceil(x)] : [x];
     const ys = y%1 ? [Math.floor(y),Math.ceil(y)] : [y];
@@ -139,7 +145,7 @@ function makeWorld() {
     for(const [dx,dy] of dirs){
       for(let i=1;i<=range;i++){
         const nx=x+dx*i, ny=y+dy*i;
-        if(!inB(nx,ny)||grid[ny][nx]===WALL) break;
+        if(!inB(nx,ny)||solid(grid[ny][nx])) break;
         cells.push({x:nx,y:ny});
         if(grid[ny][nx]===BARREL||grid[ny][nx]===CRATE) break;
       }
@@ -167,7 +173,7 @@ function makeWorld() {
   function makePlayer(tx,ty,isHuman,capColor,botDiff){
     return { tx,ty, fx:tx,fy:ty, tox:tx,toy:ty, t:0, moving:false, dir:'down',
       isHuman, color:SKIN, colorLight:SKIN_LT, capColor:capColor||'#1a1a1f', alive:true,
-      range:1, maxBubbles:1, active:0, speed:0, ride:null, stepLen:1, tentative:false,
+      range:1, maxBubbles:1, active:0, speed:0, ride:null, stepLen:1, tentative:false, ghost:false, ghostCd:0,
       trapped:false, trappedBy:null, trapTimer:0, struggle:0, escapeAt:0,
       botDiff, think:0, anim:0, target:null, targetTtl:0 };
   }
@@ -178,13 +184,16 @@ function makeWorld() {
     const spice=[{move:+0.05,trap:-0.15},{move:0,trap:0},{move:-0.03,trap:+0.1}][i];
     return { move:Math.max(0.1,base.move+spice.move), trap:Math.min(1,Math.max(0,base.trap+spice.trap)), react:base.react, esc:base.esc };
   }
-  function reset(controls, colors, d, teams, mapId){
+  // opts.tide === false holds the sea back: unit tests that run minutes of sim
+  // time are about one rule each, and a flooding board is a second rule.
+  function reset(controls, colors, d, teams, mapId, opts){
     diff = d || 'normal';
     controls = controls || ['local','ai','ai','ai'];
     colors = colors || [];
     teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
     buildMap(mapId);
     bubbles=[]; blasts=[]; powerups=[]; burstCounter=0; gameState='playing'; winnerSlot=-1; winnerTeam=-1; events=[]; simTime=0;
+    tideRing=0; tideNext=(opts && opts.tide===false) ? Infinity : TIDE_START;
     const used=new Set(colors.filter(Boolean));
     const botPool=PALETTE.filter(c=>!used.has(c));
     let bi=0, bp=0;
@@ -194,7 +203,7 @@ function makeWorld() {
       const aiLike=(ctrl==='ai'||ctrl==='none');
       const p=makePlayer(s[0],s[1], !aiLike, cap, aiLike?botPlan(bi++%3):null);
       p.control=ctrl; p.slot=i; p.captain=false; p.inHeld=[]; p.inBomb=false; p._lastHeld=null;
-      p.inTap=false; p.tapTtl=0; p.inSeq=0; p._stepSeq=0; p._doneSeq=0; p.inHalf=false; p.faceX=1;
+      p.inTap=false; p.tapTtl=0; p.inSeq=0; p._stepSeq=0; p._doneSeq=0; p.faceX=1;
       p._pressSeq=-1; p.pressT=0; p.pressSteps=0; p.idleT=9;
       p.team = teamMode ? (teams[i]==null?null:teams[i]) : null;
       if(ctrl==='none') p.alive=false;   // slot not in this match (player-count < 4)
@@ -204,18 +213,26 @@ function makeWorld() {
 
   function placeBubble(p){
     const {x,y}=tileOf(p);
-    if(p.active>=p.maxBubbles || bubbleAt(x,y)) return;
+    if(!inB(x,y) || bubbleAt(x,y)) return;
+    if(p.ghost){                                   // a ghost bubble only ever traps
+      if(p.ghostCd>0 || grid[y][x]===WATER) return;
+      bubbles.push({x,y,fuse:FUSE,range:GHOST_RANGE,owner:p,soft:true});
+      p.ghostCd=GHOST_CD; events.push('place'); return;
+    }
+    if(p.active>=p.maxBubbles || grid[y][x]!==FLOOR) return;
     bubbles.push({x,y,fuse:FUSE,range:p.range,owner:p});
     p.active++; events.push('place');
   }
   function burst(b){
     const id=++burstCounter, cells=blastCells(b.x,b.y,b.range);
     for(const c of cells){
-      if(grid[c.y][c.x]===BARREL||grid[c.y][c.x]===CRATE){
+      // a ghost's splash breaks nothing and sets nothing else off — it only wets
+      if(!b.soft && (grid[c.y][c.x]===BARREL||grid[c.y][c.x]===CRATE)){
         grid[c.y][c.x]=FLOOR;
         if(Math.random()<POWERUP_CHANCE) powerups.push({x:c.x,y:c.y,type:rollFrom(DROP_POOL)});
       }
-      blasts.push({x:c.x,y:c.y,timer:BLAST_TIME,id,owner:b.owner});
+      blasts.push({x:c.x,y:c.y,timer:BLAST_TIME,id,owner:b.owner,soft:!!b.soft});
+      if(b.soft) continue;
       const chain=bubbleAt(c.x,c.y);
       if(chain && chain!==b && chain.fuse>0) chain.fuse=0;
     }
@@ -338,10 +355,10 @@ function makeWorld() {
   function moveDur(p){ return rideDur(p, BASE_MOVE - speedGain(p.speed)); }
   function botMoveDur(p){ return rideDur(p, Math.max(0.12, p.botDiff.move - speedGain(p.speed))); }
 
-  // How long the step in progress takes. Half-steps cover half the ground in
-  // half the time, so the walking speed is the same either way — except for the
-  // first tile of a press, which waits out the thumb (see TAP_HOLD).
+  // How long the step in progress takes — except for the first tile of a press,
+  // which waits out the thumb (see TAP_HOLD).
   function stepDur(p){
+    if(p.ghost) return GHOST_MOVE;
     const base = (p.isHuman ? moveDur(p) : botMoveDur(p)*(p.urgent?0.55:1)) * (p.stepLen||1);
     if(!p.tentative) return base;                    // walking, and leaning back, run at full speed
     // The lean has to last until the press is old enough to judge, and cover no
@@ -394,39 +411,70 @@ function makeWorld() {
     const committed = p.control==='ai' || p.pressSteps===0 || (p.pressT>=TAP_HOLD && !p.inTap);
     const leaning = !committed && p.control!=='ai' && p.pressSteps>0 && stillPressing(p);
     if(dir && (committed || leaning)){ const [dx,dy]=DIRV[dir];
-      const half = p.control!=='ai' && !!p.inHalf;
-      const off = (dx ? p.tx : p.ty) % 1;                                    // already on a line?
-      // half = stop on the next line; otherwise walk to the next tile
-      // centre, which from a line is only half a tile — so you can always
-      // square yourself up again with an ordinary tap.
-      const len = (half || off) ? 0.5 : 1;
-      const nx = p.tx+dx*len, ny = p.ty+dy*len;
-      // shoving needs a whole tile ahead of you, so only square-on from a centre
-      const cx = p.tx+dx, cy = p.ty+dy;
-      if(!half && !off && !leaning && p.control!=='ai' && inB(cx,cy) && grid[cy][cx]===CRATE) pushCrate(p,cx,cy,dx,dy);
-      if(canStand(nx,ny)){ p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir;
-        p.stepLen=len; p.tentative=leaning;
+      const nx = p.tx+dx, ny = p.ty+dy;
+      if(!leaning && !p.ghost && p.control!=='ai' && inB(nx,ny) && grid[ny][nx]===CRATE) pushCrate(p,nx,ny,dx,dy);
+      if(p.ghost ? inB(nx,ny) : canStand(nx,ny)){                            // a ghost drifts through anything
+        p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir;
+        p.stepLen=1; p.tentative=leaning;
         if(dx) p.faceX=dx;                                                   // which way he leans
         p._stepSeq=p.inSeq; p.pressSteps++;                                  // which press this step belongs to
         if(p.inTap){ p.inHeld=[]; p.inTap=false; p._doneSeq=p.inSeq; } } }   // a tap buys one step
   }
 
+  // One ring of the bay goes under: everything on it is water now, and anyone
+  // standing there drowns. Ghosts float over it.
+  function floodRing(r){
+    const x0=r, x1=COLS-1-r, y0=r, y1=ROWS-1-r;
+    if(x0>x1 || y0>y1) return false;
+    for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
+      if(x!==x0 && x!==x1 && y!==y0 && y!==y1) continue;                        // the ring, not the whole rectangle
+      if(grid[y][x]===WATER) continue;
+      grid[y][x]=WATER; decor.delete(key(x,y));
+      for(let i=bubbles.length-1;i>=0;i--) if(bubbles[i].x===x&&bubbles[i].y===y){
+        const b=bubbles.splice(i,1)[0]; if(!b.soft && b.owner.active>0) b.owner.active--; }
+      for(let i=powerups.length-1;i>=0;i--) if(powerups[i].x===x&&powerups[i].y===y) powerups.splice(i,1);
+    }
+    events.push('tide');
+    return true;
+  }
+  function drown(p){ p.alive=false; p.trapped=false; p.ride=null; events.push('pop'); if(p.isHuman) becomeGhost(p); }
+  // Out of the running, still in the game.
+  function becomeGhost(p){
+    p.ghost=true; p.ghostCd=GHOST_CD; p.moving=false; p.tentative=false; p.stepLen=1;
+    p.inHeld=[]; p.inTap=false; p.inBomb=false; p.active=0; p.ride=null; p.trapped=false; p.trappedBy=null;
+    const t=tileOf(p); p.tx=p.fx=p.tox=t.x; p.ty=p.fy=p.toy=t.y;
+    events.push('ghost');
+  }
   function update(dt){
     events=[];
     if(gameState!=='playing') return events;
-    simTime+=dt;                                    // stamps snapshots, so a client can draw them evenly however they arrive
+    simTime+=dt;
+    if(simTime>=tideNext){ if(floodRing(++tideRing)) tideNext=simTime+TIDE_STEP; else tideNext=Infinity; }                                    // stamps snapshots, so a client can draw them evenly however they arrive
     for(const b of bubbles) b.fuse-=dt;
     let popped=true;
     while(popped){ popped=false;
-      for(let i=bubbles.length-1;i>=0;i--){ if(bubbles[i].fuse<=0){ const b=bubbles.splice(i,1)[0]; if(b.owner.active>0) b.owner.active--; burst(b); popped=true; } }
+      for(let i=bubbles.length-1;i>=0;i--){ if(bubbles[i].fuse<=0){ const b=bubbles.splice(i,1)[0]; if(!b.soft && b.owner.active>0) b.owner.active--; burst(b); popped=true; } }
     }
     for(let i=blasts.length-1;i>=0;i--){ blasts[i].timer-=dt; if(blasts[i].timer<=0) blasts.splice(i,1); }
     const danger=new Set();
     for(const bl of blasts) danger.add(key(bl.x,bl.y));
     for(const b of bubbles) for(const c of blastCells(b.x,b.y,b.range)) danger.add(key(c.x,c.y));
     for(const p of players){
-      if(!p.alive) continue;
+      if(!p.alive && !p.ghost) continue;
       p.anim+=dt;
+      if(p.ghost){                                   // drifts anywhere, picks nothing up, cannot be hurt
+        if(p.ghostCd>0) p.ghostCd=Math.max(0,p.ghostCd-dt);
+        if(p.inSeq!==p._pressSeq){ p._pressSeq=p.inSeq; p.pressT=dt; p.pressSteps=0; } else p.pressT+=dt;
+        p.idleT = (p.inHeld && p.inHeld.length && !p.inTap) ? 0 : p.idleT+dt;
+        if(p.inTap && (p.tapTtl-=dt)<=0){ p.inHeld=[]; p.inTap=false; }
+        if(!p.moving) startStep(p, danger, dt);
+        if(p.moving){
+          const dur=stepDur(p); p.t+=dt/dur;
+          if(p.t>=1){ const spare=(p.t-1)*dur; p.t=0; p.moving=false; p.tx=p.tox; p.ty=p.toy;
+            startStep(p, danger, dt); if(p.moving) p.t=Math.min(0.999, spare/stepDur(p)); }
+        }
+        continue;
+      }
       // How long the CURRENT press has lasted. inSeq identifies one press of one
       // direction (the client bumps it on every new press), so releasing and
       // pressing again starts a fresh press even in the same direction.
@@ -446,7 +494,7 @@ function makeWorld() {
         const elapsed=TRAP_TIME-p.trapTimer;
         const freed = p.isHuman ? (p.struggle>=ESCAPE_NEED) : (elapsed>=p.escapeAt);
         if(freed){ p.trapped=false; p.trappedBy=null; p.struggle=0; }
-        else if(p.trapTimer<=0){ p.alive=false; events.push('pop'); }
+        else if(p.trapTimer<=0){ p.alive=false; events.push('pop'); if(p.isHuman) becomeGhost(p); }
         continue;
       }
       if(!p.moving) startStep(p, danger, dt);
@@ -476,6 +524,11 @@ function makeWorld() {
         }
       }
     }
+    for(const p of players){                         // the tide takes whoever it finds, mid-step or not
+      if(!p.alive || p.ghost) continue;
+      const t=tileOf(p);
+      if(inB(t.x,t.y) && grid[t.y][t.x]===WATER) drown(p);
+    }
     for(const p of players){
       if(!p.alive) continue;
       const q=dmgPoint(p);
@@ -483,9 +536,9 @@ function makeWorld() {
       const hits=blasts.filter(bl=>inBlast(q,bl)&&(p.isHuman||bl.owner!==p));
       if(!hits.length) continue;
       if(p.trapped){
-        const popper=hits.find(h=>h.id!==p.trappedBy);
+        const popper=hits.find(h=>h.id!==p.trappedBy && !h.soft);   // a ghost's splash cannot finish anyone off
         if(popper){ if(popper.owner && areAllies(popper.owner,p)){ p.trapped=false; p.trappedBy=null; p.struggle=0; events.push('free'); }
-                    else { p.alive=false; events.push('pop'); } }
+                    else { p.alive=false; events.push('pop'); if(p.isHuman) becomeGhost(p); } }
       }
       else { p.trapped=true; p.trappedBy=hits[0].id; p.trapTimer=TRAP_TIME; p.struggle=0; p.ride=null;
         p.escapeAt = p.isHuman ? 999 : ((Math.random()<p.botDiff.esc) ? (0.7+Math.random()*1.5) : 999);
@@ -500,7 +553,7 @@ function makeWorld() {
         const tq=posOf(q);
         if(Math.abs(tq.x-pt.tx)<0.5 && Math.abs(tq.y-pt.ty)<0.5){
           if(areAllies(q,pt)){ pt.trapped=false; pt.trappedBy=null; pt.struggle=0; events.push('free'); }
-          else { pt.alive=false; events.push('pop'); }
+          else { pt.alive=false; events.push('pop'); if(pt.isHuman) becomeGhost(pt); }
           break;
         }
       }
@@ -536,18 +589,19 @@ function makeWorld() {
     } else {
       p.inHeld = inp.dir?[inp.dir]:[]; p.inSeq=seq; p.inTap=false;
     }
-    p.inHalf = !!inp.half;                        // the ½ button, held per press
     if(inp.bomb) p.inBomb=true; p._lastHeld=inp.dir||null;
   }
   function snapshot(){
     return { gs:gameState, win:winnerSlot, ev:events, tm:teamMode, wt:winnerTeam, st:Math.round(simTime*1000),
+      tr:tideRing, tt:(tideNext===Infinity ? -1 : Math.max(0, Math.round((tideNext-simTime)*1000))),
       grid: grid.map(r=>r.join('')),
       players: players.map(p=>({slot:p.slot,tx:p.tx,ty:p.ty,fx:p.fx,fy:p.fy,tox:p.tox,toy:p.toy,
-        t:p.t,moving:p.moving,dir:p.dir,faceX:p.faceX,alive:p.alive,trapped:p.trapped,trapTimer:p.trapTimer,struggle:p.struggle,
+        t:p.t,moving:p.moving,dir:p.dir,faceX:p.faceX,alive:p.alive,ghost:p.ghost,ghostCd:Math.round(p.ghostCd*10)/10,
+        trapped:p.trapped,trapTimer:p.trapTimer,struggle:p.struggle,
         range:p.range,maxBubbles:p.maxBubbles,speed:p.speed,ride:p.ride,isHuman:p.isHuman,capColor:p.capColor,anim:p.anim,team:p.team,
         md:(p.isHuman?moveDur(p):botMoveDur(p)),color:SKIN,colorLight:SKIN_LT})),
-      bubbles: bubbles.map(b=>({x:b.x,y:b.y,fuse:b.fuse,range:b.range,o:b.owner?b.owner.slot:-1})),   // o: whose, so a client can count its own
-      blasts: blasts.map(b=>({x:b.x,y:b.y,timer:b.timer})),
+      bubbles: bubbles.map(b=>({x:b.x,y:b.y,fuse:b.fuse,range:b.range,o:b.owner?b.owner.slot:-1,soft:!!b.soft})),   // o: whose, so a client can count its own
+      blasts: blasts.map(b=>({x:b.x,y:b.y,timer:b.timer,soft:!!b.soft})),
       powerups: powerups.map(p=>({x:p.x,y:p.y,type:p.type})) };
   }
   function mapMsg(){ return { grid:grid.map(r=>r.join('')), decor:[...decor], theme, shipCenter, map:mapIdx }; }
@@ -558,7 +612,8 @@ function makeWorld() {
 }
 
 const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, TAP_HOLD, DMG_OFF, SPEED_GAIN, MAX_SPEED, MAX_RANGE, MAX_BUBBLES,
-  FLOOR, WALL, BARREL, CRATE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES };
+  FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
+  DROP_POOL, SURPRISE_POOL };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : null));

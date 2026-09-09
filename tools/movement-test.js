@@ -23,6 +23,7 @@
 //                                  sailor saturates: excess presses are
 //                                  dropped, not queued, or he can't stop)
 //   4. changing direction       -> he goes where you last pointed
+//   5. every stop lands on a whole tile (the ½ half-step is gone)
 const fs = require('fs'), path = require('path');
 const ROOT = process.argv[2] || path.join(__dirname, '..');
 const BB = require(path.join(ROOT, 'relay/game-core.js'));
@@ -78,17 +79,16 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
     let state = 'playing', mySlot = ctx.mySlot, teamMode = false;
     let netRole = ctx.online ? 'host' : 'off';
     const world = ctx.online ? null : ctx.world;      // startGame() makes this for single-player
-    let halfMode = false, halfKey = false;            // the ½ button, off for these cases
-    const halfOn = () => halfMode || halfKey;
     const sfx = new Proxy({}, { get: () => () => {} });
     const endGame = () => { state = 'over'; };
     const ws = { readyState: 1 };
     const wsSend = o => ctx.send(o);
     const mashEscape = () => {};
     const smoothPlayers = () => {}; let paused = false; const predictStep = () => {}, predictDraw = () => {}, predictInput = () => {};
-    const render = () => {};
+    const render = () => {}, tideTick = () => {};
+    let tideMs = -1, tideRings = 0;
     ${CLIENT_SRC}
-    return { loop, pressDir, releaseDir, syncWorld, setHalf: v => { halfMode = v; },
+    return { loop, pressDir, releaseDir, syncWorld,
              setPlayers: p => { players = p; } };
   `)(ctx);
   if (!online) C.syncWorld();                          // startGame() does this before the first frame
@@ -257,6 +257,19 @@ for (const speed of [0, 3, 5]) {
   }
 }
 
+
+console.log('\n10. No half-steps: he always ends up on a whole tile\n');
+// The ½ button is gone. Nothing may leave a sailor standing on the line between
+// two tiles, and no half-step input path may survive in the page.
+{
+  const whole = v => Math.abs(v - Math.round(v)) < 1e-9;
+  const r = play({ script: [[0, 'right', 90], [200, 'down', 900], [1200, 'left', 120], [1500, 'up', 700]], runMs: 2600 });
+  check('single-player: lands on whole tiles', whole(r.dx) && whole(r.dy), `moved ${r.dx}, ${r.dy}`);
+  const o = play({ online: true, rttMs: 150, script: [[0, 'right', 90], [300, 'down', 800]], runMs: 2200 });
+  check('online: lands on whole tiles', whole(o.dx) && whole(o.dy), `moved ${o.dx}, ${o.dy}`);
+  check('the page has no ½ control left', !/halfbtn|halfOn|halfMode|inHalf/.test(HTML));
+  check('input packets carry no half flag', !/k:'input'[^}]*half/.test(HTML));
+}
 
 console.log(failed ? `\n${failed} FAILING CASE(S)` : '\nall cases pass');
 process.exit(failed ? 1 : 0);

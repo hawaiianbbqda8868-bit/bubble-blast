@@ -23,7 +23,7 @@ const eq = (label, got, want) =>                 // deep, so [10,8] matches [10,
 // for lack of opponents, and the sim would stop.
 function arena(slot1 = 'local') {
   const w = BB.makeWorld();
-  w.reset(['local', slot1, 'none', 'none', 'none', 'none', 'none', 'none'], ['#fff', '#0ff'], 'normal');
+  w.reset(['local', slot1, 'none', 'none', 'none', 'none', 'none', 'none'], ['#fff', '#0ff'], 'normal', null, 0, { tide:false });
   const r = w.read();
   for (let y = 1; y < BB.ROWS - 1; y++)
     for (let x = 1; x < BB.COLS - 1; x++) r.grid[y][x] = BB.FLOOR;
@@ -118,7 +118,21 @@ console.log('\n4. The surprise box rolls inside its pool\n');
   eq('the box leaves the floor either way', r.powerups.length, 0);
 }
 
-console.log('\n5. Pushing a crate\n');
+console.log('\n5. Rides and skates are a treat, not the norm\n');
+{
+  const share = (pool, want) => { const total = pool.reduce((a, [, w]) => a + w, 0);
+    return pool.filter(([v]) => want.includes(v)).reduce((a, [, w]) => a + w, 0) / total; };
+  const rides = [BB.PU_CAR, BB.PU_TURTLE], skate = [BB.PU_SPEED];
+  const boxShare = share(BB.DROP_POOL, [BB.PU_SURPRISE]);
+  // what a burst barrel actually hands you, box rolls included
+  const eff = want => share(BB.DROP_POOL, want) + boxShare * share(BB.SURPRISE_POOL, want);
+  const power = eff([BB.PU_RANGE, BB.PU_BUBBLE]);
+  check('a ride is at most 1 drop in 6', eff(rides) <= 1 / 6, `${(eff(rides) * 100).toFixed(1)}% of drops`);
+  check('skates are at most 1 drop in 6', eff(skate) <= 1 / 6, `${(eff(skate) * 100).toFixed(1)}% of drops`);
+  check('water and bubbles outnumber rides and skates 2:1', power >= 2 * (eff(rides) + eff(skate)), `${(power * 100).toFixed(1)}% vs ${((eff(rides) + eff(skate)) * 100).toFixed(1)}%`);
+}
+
+console.log('\n6. Pushing a crate\n');
 {
   const { w, r, p } = arena();
   const x = p.tx, y = p.ty;

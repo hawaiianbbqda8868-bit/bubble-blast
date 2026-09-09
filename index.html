@@ -37,12 +37,6 @@
   #dpad .arm { position:absolute; width:60px; height:60px; display:flex; align-items:center; justify-content:center; font-size:22px; color:var(--ink); pointer-events:none; }
   #dpad .arm.up{left:60px;top:0}#dpad .arm.down{left:60px;top:120px}#dpad .arm.left{left:0;top:60px}#dpad .arm.right{left:120px;top:60px}
   #dpad .arm.on { background:rgba(58,217,207,.35); border-radius:18px; color:#fff; }
-  #halfbtn { position:fixed; left:24px; bottom:212px; z-index:20; width:74px; height:56px; border-radius:18px;
-    border:2px solid rgba(255,255,255,.18); background:rgba(6,22,31,.72); color:var(--ink); display:flex; flex-direction:column; align-items:center; justify-content:center; }
-  #halfbtn b { font:800 18px 'Baloo 2',sans-serif; line-height:1; }
-  #halfbtn small { font:800 9px Nunito,sans-serif; letter-spacing:1px; color:#9fc0cd; }
-  #halfbtn.on { background:rgba(58,217,207,.45); border-color:rgba(190,240,255,.95); }
-  #halfbtn.on small { color:#fff; }
   #bombwrap { right:24px; bottom:34px; }
   #bomb { width:118px; height:118px; border:none; border-radius:50%; display:flex; flex-direction:column; align-items:center; justify-content:center;
     background:radial-gradient(circle at 38% 32%, #7fe4ff, #2a7fd6); box-shadow:0 8px 0 #1b5b9c, inset 0 3px 8px rgba(255,255,255,.45); }
@@ -64,6 +58,14 @@
   .hudcard .av { width:22px; height:22px; border:2px solid #06161f; }
   .hudcard .nm { font:800 15px Nunito,sans-serif; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .hudcard .left { margin-left:auto; font:800 13px Nunito,sans-serif; color:var(--gold); white-space:nowrap; }
+  .hudcard.ghost { background:rgba(20,44,66,.85); }
+  #hudTide { font:800 12px Nunito,sans-serif; color:#8bd8ff; }
+  #hudTide.soon { color:#ffc63d; }
+  #bomb.splash { background:radial-gradient(circle at 38% 32%, #cfe6ff, #8fb4d6); box-shadow:0 8px 0 #5b7f9c; }
+  #bomb.cooling { filter:grayscale(.6); opacity:.6; }
+  #tideWarn { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:45; pointer-events:none;
+    font:800 30px 'Baloo 2',sans-serif; color:#eaf7fb; text-shadow:0 4px 18px rgba(0,0,0,.7); letter-spacing:2px; }
+  #tideWarn[hidden] { display:none; }
   .hudcard .stats { display:flex; gap:14px; margin-top:9px; }
   .stat { display:flex; align-items:center; gap:5px; }
   .stat span { font-size:14px; }
@@ -240,10 +242,12 @@
     <div class="stat"><span>🫧</span><div class="pips" id="pipBubbles" style="--pc:#8bd8ff"></div></div>
     <div class="stat"><span>👟</span><div class="pips" id="pipSpeed" style="--pc:#ffc63d"></div></div>
     <div class="stat" id="hudRide" hidden></div>
+    <div class="stat" id="hudTide" hidden></div>
   </div>
 </div></div>
 <div id="ver"></div>
 <div id="netBanner" hidden>Reconnecting…</div>
+<div id="tideWarn" hidden>🌊 THE TIDE IS RISING</div>
 
 <div class="pad" id="stick"><div id="knob"></div></div>
 <div class="pad" id="dpad">
@@ -253,7 +257,6 @@
   <span class="arm left">◀</span>
   <span class="arm right">▶</span>
 </div>
-<button id="halfbtn"><b>½</b><small>HALF STEP</small></button>
 <div class="pad" id="bombwrap"><button id="bomb"><b>🫧</b><small>DROP</small></button></div>
 
 <div class="overlay" id="startScreen">
@@ -392,10 +395,10 @@
   </div>
 </div>
 
-<script src="game-core.js?v42"></script>
+<script src="game-core.js?v44"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v42';
+const APP_VERSION = 'v44';
 // Last line of defence against a fresh page running an older sim: game-core.js
 // is versioned in its URL, but if the two ever disagree, throw the caches away
 // and reload once rather than play by two different sets of rules.
@@ -424,7 +427,7 @@ const MAX_SPEED = BB.MAX_SPEED;
 // same core the relay runs. What is left here is for the HUD and the renderer.
 const MAX_RANGE = BB.MAX_RANGE, MAX_BUBBLES = BB.MAX_BUBBLES;
 
-const FLOOR=BB.FLOOR, WALL=BB.WALL, BARREL=BB.BARREL, CRATE=BB.CRATE;
+const FLOOR=BB.FLOOR, WALL=BB.WALL, BARREL=BB.BARREL, CRATE=BB.CRATE, WATER=BB.WATER;
 const ITEM_ICON=['💧','🫧','👟','🏎️','🐢','🎁'];   // indexed by the core's PU_* values
 const RIDE_ICON={ car:'🏎️', turtle:'🐢' };
 
@@ -500,6 +503,8 @@ const sfx = {
   free:()=>{beep(700,0.08,'sine',0.06); setTimeout(()=>beep(1050,0.12,'sine',0.06),70);},
   win:()=>[523,659,784,1046].forEach((f,i)=>setTimeout(()=>beep(f,0.18,'square',0.06),i*140)),
   lose:()=>[392,330,262].forEach((f,i)=>setTimeout(()=>beep(f,0.22,'sawtooth',0.06),i*160)),
+  tide:()=>{beep(70,0.5,'sine',0.07); setTimeout(()=>beep(55,0.6,'sine',0.06),120);},   // the sea comes in
+  ghost:()=>[440,330,262,196].forEach((f,i)=>setTimeout(()=>beep(f,0.16,'sine',0.05),i*90)),
 };
 
 // ====================== HELPERS ======================
@@ -553,15 +558,11 @@ function startGame(){ netRole='off'; mySlot=0;
   const teams = menuTeams ? autoTeams(controls) : null;
   teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
   world=BB.makeWorld(); world.reset(controls, [myColor], diff, teams, menuMap); syncWorld();
-  state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); }
+  state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; hideOverlays(); }
 function endGame(win){ state='over'; showResult(win); }
 
 // ====================== INPUT ======================
 const held=[]; let wantBubble=false, bufferDir=null, bufferT=0, inSeq=0;
-// 半身位: while this is on, a tap moves HALF a tile, so you can stop on the
-// line between two tiles. Shift does the same on a keyboard.
-let halfMode=false, halfKey=false;
-const halfOn = () => halfMode || halfKey;
 let ctrlMode=(function(){ try{ return localStorage.getItem('bnbCtrl')||'stick'; }catch(e){ return 'stick'; } })();
 // Every new press gets an id, so the server can tell one tap from the next.
 function armDir(d){ inSeq++; bufferDir=d; bufferT=performance.now(); mashEscape(); }
@@ -579,15 +580,10 @@ function mashEscape(){ // wiggling while trapped builds your escape
 const KEYMAP={ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',
   w:'up',s:'down',a:'left',d:'right',W:'up',S:'down',A:'left',D:'right'};
 addEventListener('keydown',e=>{
-  if(e.key==='Shift'){ halfKey=true; return; }
   if(e.key===' '){ wantBubble=true; e.preventDefault(); return; }
   const d=KEYMAP[e.key]; if(d){ pressDir(d); e.preventDefault(); }
 });
-addEventListener('keyup',e=>{ if(e.key==='Shift'){ halfKey=false; return; }
-  const d=KEYMAP[e.key]; if(d) releaseDir(d); });
-(function(){ const b=document.getElementById('halfbtn');
-  b.addEventListener('pointerdown',e=>{ e.preventDefault(); halfMode=!halfMode; b.classList.toggle('on',halfMode); });
-})();
+addEventListener('keyup',e=>{ const d=KEYMAP[e.key]; if(d) releaseDir(d); });
 
 function bindBtn(id,onDown,onUp){
   const el=document.getElementById(id);
@@ -893,6 +889,23 @@ function drawRide(p,cx,cy){
       ctx.beginPath(); ctx.ellipse(cx+ox,base-1+oy,R*0.22,R*0.15,0,0,7); ctx.fill(); }
   }
 }
+// The bay. Deeper blue the longer it has been there, with a moving swell and a
+// foam edge wherever it meets what is left of the deck.
+function drawWater(px,py,x,y,now){
+  const g=ctx.createLinearGradient(px,py,px,py+TILE);
+  g.addColorStop(0,'#1b6fa8'); g.addColorStop(1,'#0e4a77');
+  ctx.fillStyle=g; ctx.fillRect(px,py,TILE,TILE);
+  const w=Math.sin(now/620 + (x+y)*0.7);
+  ctx.fillStyle=`rgba(255,255,255,${0.07+0.05*(w*0.5+0.5)})`;
+  ctx.fillRect(px, py+TILE*0.30+w*2.5, TILE, 3);
+  ctx.fillRect(px, py+TILE*0.68-w*2.5, TILE, 2);
+  const dry=(gx,gy)=> gx>=0&&gy>=0&&gx<COLS&&gy<ROWS&&grid[gy][gx]!==WATER;
+  ctx.fillStyle='rgba(255,255,255,.42)';
+  if(dry(x,y-1)) ctx.fillRect(px,py,TILE,3);
+  if(dry(x,y+1)) ctx.fillRect(px,py+TILE-3,TILE,3);
+  if(dry(x-1,y)) ctx.fillRect(px,py,3,TILE);
+  if(dry(x+1,y)) ctx.fillRect(px+TILE-3,py,3,TILE);
+}
 function drawCharacter(p,cx,cy){
   const R=TILE*0.32, dir=p.dir||'down';
   const wob=p.moving?Math.sin(p.anim*18)*1.3:0, by=cy+wob;
@@ -933,11 +946,14 @@ function updateCamera(){
   const nw = Math.round(cssW*dpr), nh = Math.round(cssH*dpr);
   if(cv.width!==nw || cv.height!==nh){ cv.width=nw; cv.height=nh; cv.style.width=cssW+'px'; cv.style.height=cssH+'px'; }
   const worldW = COLS*TILE, worldH = ROWS*TILE;
-  const containScale = Math.min(cssW/worldW, cssH/worldH);
+  // The HUD owns a strip across the top; the board is fitted UNDER it so a
+  // sailor can never end up hiding behind your own stats.
+  const top = hudH, availH = Math.max(120, cssH-top);
+  const containScale = Math.min(cssW/worldW, availH/worldH);
   let zoom, follow;
   if(containScale*TILE >= 34){ zoom = containScale; follow = false; }   // whole board is big enough (Fold/tablet/landscape)
-  else { zoom = Math.min(CAM_MAX_TILE/TILE, Math.max(cssW/worldW, cssH/worldH)); follow = true; } // phone → zoom in & follow
-  const viewW = cssW/zoom, viewH = cssH/zoom;
+  else { zoom = Math.min(CAM_MAX_TILE/TILE, Math.max(cssW/worldW, availH/worldH)); follow = true; } // phone → zoom in & follow
+  const viewW = cssW/zoom, viewH = availH/zoom;
   let tx, ty;
   const me = players && (players[mySlot] || players[0]);
   if(follow && me && state==='playing'){
@@ -949,7 +965,7 @@ function updateCamera(){
   ty = worldH<=viewH ? (worldH-viewH)/2 : Math.max(0, Math.min(ty, worldH-viewH));
   if(CAM.x==null || !follow || state!=='playing'){ CAM.x=tx; CAM.y=ty; }
   else { CAM.x += (tx-CAM.x)*CAM_FOLLOW; CAM.y += (ty-CAM.y)*CAM_FOLLOW; }
-  CAM.zoom=zoom; CAM.cssW=cssW; CAM.cssH=cssH; CAM.dpr=dpr;
+  CAM.zoom=zoom; CAM.cssW=cssW; CAM.cssH=cssH; CAM.dpr=dpr; CAM.top=top;
 }
 
 function render(){
@@ -959,10 +975,12 @@ function render(){
   // clear the whole screen (covers any letterbox), then draw the world through the camera
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.fillStyle='#0d1526'; ctx.fillRect(0,0,CAM.cssW,CAM.cssH);
-  ctx.setTransform(z*dpr,0,0,z*dpr, -CAM.x*z*dpr, -CAM.y*z*dpr);
-  // floor planks (themed)
+  ctx.setTransform(z*dpr,0,0,z*dpr, -CAM.x*z*dpr, (CAM.top-CAM.y*z)*dpr);
+  // floor planks (themed) — and the bay where the tide has taken them
+  const now=performance.now();
   for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
     const px=x*TILE, py=y*TILE;
+    if(grid[y][x]===WATER){ drawWater(px,py,x,y,now); continue; }
     ctx.fillStyle = (x+y)%2 ? T.f1 : T.f2;
     ctx.fillRect(px,py,TILE,TILE);
     ctx.fillStyle='rgba(0,0,0,.10)'; ctx.fillRect(px,py+TILE-3,TILE,3);
@@ -1000,6 +1018,13 @@ function render(){
     const px=b.x*TILE+TILE/2, py=b.y*TILE+TILE/2;
     const pulse=1+Math.sin(performance.now()/90)*0.06*(1-b.fuse/FUSE);
     const r=TILE*0.42*pulse;
+    if(b.soft){                                        // a ghost's: it only ever traps
+      ctx.save(); ctx.globalAlpha=0.75;
+      ctx.fillStyle='rgba(200,230,255,.30)'; ctx.beginPath(); ctx.arc(px,py,r,0,7); ctx.fill();
+      ctx.strokeStyle='rgba(230,245,255,.85)'; ctx.setLineDash([5,4]); ctx.lineWidth=2.5;
+      ctx.beginPath(); ctx.arc(px,py,r,0,7); ctx.stroke(); ctx.setLineDash([]);
+      ctx.restore(); continue;
+    }
     ctx.fillStyle='rgba(95,200,255,.45)'; ctx.beginPath(); ctx.arc(px,py,r,0,7); ctx.fill();
     ctx.strokeStyle='rgba(150,230,255,.9)'; ctx.lineWidth=2; ctx.stroke();
     ctx.fillStyle='rgba(255,255,255,.7)'; ctx.beginPath(); ctx.arc(px-r*0.3,py-r*0.3,r*0.22,0,7); ctx.fill();
@@ -1007,12 +1032,23 @@ function render(){
   // blasts (water)
   for(const bl of blasts){
     const px=bl.x*TILE, py=bl.y*TILE, a=Math.min(1,bl.timer/BLAST_TIME);
-    ctx.fillStyle=`rgba(120,210,255,${0.55*a})`; roundRect(px+2,py+2,TILE-4,TILE-4,6); ctx.fill();
-    ctx.fillStyle=`rgba(255,255,255,${0.5*a})`; roundRect(px+7,py+7,TILE-14,TILE-14,5); ctx.fill();
+    const soft=bl.soft;
+    ctx.fillStyle=soft?`rgba(180,225,255,${0.34*a})`:`rgba(120,210,255,${0.55*a})`; roundRect(px+2,py+2,TILE-4,TILE-4,6); ctx.fill();
+    ctx.fillStyle=`rgba(255,255,255,${(soft?0.3:0.5)*a})`; roundRect(px+7,py+7,TILE-14,TILE-14,5); ctx.fill();
+  }
+  // ghosts drift under everyone still in the running
+  for(const p of players){
+    if(!p.ghost) continue;
+    const q=drawPos(p), cx=q.x*TILE+TILE/2, cy=q.y*TILE+TILE/2+Math.sin((p.anim||0)*3)*3;
+    ctx.save(); ctx.globalAlpha = p.slot===mySlot ? 0.62 : 0.42;
+    drawCharacter(Object.assign({}, p, {ride:null, trapped:false}), cx, cy);
+    ctx.restore();
+    ctx.font='800 9px Nunito,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillStyle='rgba(200,235,255,.75)'; ctx.fillText('👻', cx, cy-TILE*0.55);
   }
   // players
   for(const p of players){
-    if(!p.alive) continue;
+    if(!p.alive || p.ghost) continue;
     const q=drawPos(p), cx=q.x*TILE+TILE/2, cy=q.y*TILE+TILE/2;
     drawCharacter(p,cx,cy);
     if(netRole!=='off' && lobby){ const lp=lobby.players.find(q=>q.slot===p.slot);   // a player whose tablet went to the background
@@ -1039,29 +1075,49 @@ function render(){
   updateHud();
 }
 // HUD: your sailor's card (DOM, top-left) — only touched when something changed
-let hudKey='';
+let hudKey='', hudH=0, tideMs=-1, tideRings=0, warnUntil=0;
+// A ring is about to go under: say so, once, in the middle of the screen.
+function tideTick(){
+  const w=document.getElementById('tideWarn'), now=performance.now();
+  if(tideMs>=0 && tideMs<=BB.TIDE_WARN*1000 && state==='playing') warnUntil=Math.max(warnUntil, now+700);
+  w.hidden = now>warnUntil || state!=='playing';
+}
+function measureHud(){ const h=document.getElementById('hud');
+  hudH = h.classList.contains('show') ? h.offsetTop + h.offsetHeight + 10 : 0; }
+addEventListener('resize', ()=>{ measureHud(); });
 function pips(id, n, max){ const el=document.getElementById(id); if(el.children.length!==max){ el.innerHTML=''; for(let i=0;i<max;i++) el.appendChild(Object.assign(document.createElement('div'),{className:'pip'})); }
   [...el.children].forEach((c,i)=>c.classList.toggle('on', i<n)); }
 function playerName(p){ if(!p) return 'Sailor'; if(!p.isHuman) return 'Bot'; if(p.slot===mySlot || (netRole==='off' && p.slot===0)) return myName;
   const lp=lobby && lobby.players.find(q=>q.slot===p.slot); return lp ? lp.name : 'Sailor '+(p.slot+1); }
 function updateHud(){
   const hud=document.getElementById('hud'), playing=state==='playing';
-  hud.classList.toggle('show', playing); document.getElementById('menuBtn').classList.toggle('show', playing);
+  if(hud.classList.contains('show')!==playing){ hud.classList.toggle('show', playing); document.getElementById('menuBtn').classList.toggle('show', playing); measureHud(); }
   if(!playing) return;
   const me=players[mySlot]||players[0]; if(!me) return;
   const n=players.filter(p=>p.alive).length;
-  const key=[me.range,me.maxBubbles,me.speed,me.ride,n,me.capColor,playerName(me)].join('|');
+  // the tide clock, and the splash button while you are haunting
+  const secs = tideMs<0 ? -1 : Math.ceil(tideMs/1000);
+  const tideEl=document.getElementById('hudTide');
+  tideEl.hidden = secs<0 || secs>30;
+  if(!tideEl.hidden){ tideEl.textContent='🌊 '+secs+'s'; tideEl.classList.toggle('soon', secs<=BB.TIDE_WARN); }
+  const bomb=document.getElementById('bomb');
+  bomb.classList.toggle('splash', !!me.ghost);
+  bomb.classList.toggle('cooling', !!me.ghost && me.ghostCd>0);
+  bomb.querySelector('small').textContent = me.ghost ? (me.ghostCd>0 ? Math.ceil(me.ghostCd)+'s' : 'HAUNT') : 'DROP';
+  document.querySelector('.hudcard').classList.toggle('ghost', !!me.ghost);
+  const key=[me.range,me.maxBubbles,me.speed,me.ride,n,me.capColor,playerName(me),me.ghost].join('|');
   if(key===hudKey) return; hudKey=key;
   document.getElementById('hudAv').style.setProperty('--cap', me.capColor||'#46c8ff');
-  document.getElementById('hudName').textContent=playerName(me);
+  document.getElementById('hudName').textContent=playerName(me)+(me.ghost?' 👻':'');
   document.getElementById('hudLeft').textContent=n+' LEFT';
   pips('pipRange', me.range, MAX_RANGE); pips('pipBubbles', me.maxBubbles, MAX_BUBBLES); pips('pipSpeed', me.speed+1, MAX_SPEED+1);
   const r=document.getElementById('hudRide'); r.hidden=!me.ride; r.innerHTML = me.ride ? '<span>'+RIDE_ICON[me.ride]+'</span>' : '';
+  measureHud();
 }
 
 // ====================== NETWORK (authoritative game server on Railway) ======================
 const RELAY_URL='wss://bubble-blast-relay-production.up.railway.app';
-let browseWs=null, browseTimer=null, lastInDir='_', lastInTap=false, lastInHalf=false, lastInT=0, botCount=3;
+let browseWs=null, browseTimer=null, lastInDir='_', lastInTap=false, lastInT=0, botCount=3;
 function rid(){ return Math.random().toString(36).slice(2,9); }
 // One id per device, kept across reloads: the server uses it to recognise a tablet
 // that re-joins on a fresh socket (second tap on Join, or back from sleep) and
@@ -1146,7 +1202,7 @@ function onServerMsg(ev){
   else if(d.k==='notready'){ document.getElementById('hostStatus').textContent='Not yet — waiting for READY: '+(d.waiting||[]).join(', '); }
   else if(d.k==='joinfail'){ if(roomCode && state!=='start'){ giveUp(d.reason||'Could not get back in.'); return; }
     document.getElementById('joinStatus').textContent=d.reason||'Could not join.'; netRole='off'; showJoinRoom(false); }
-  else if(d.k==='start'){ applyMap(d); snaps=[]; snapLag=[]; drawLag=40; simOff=null; teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; hideOverlays(); predictInit(d); }
+  else if(d.k==='start'){ applyMap(d); snaps=[]; snapLag=[]; drawLag=40; simOff=null; teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; hideOverlays(); predictInit(d); }
   else if(d.k==='state'){ applySnapshot(d); }
   else if(d.k==='closed'){ if(netRole!=='off' && state!=='start'){ toMenu(); document.getElementById('joinStatus').textContent='Host left — room closed.'; } }
 }
@@ -1266,8 +1322,10 @@ function predictReconcile(d){
   r.bubbles.length=0; for(const b of d.bubbles) r.bubbles.push({ x:b.x, y:b.y, fuse:99, range:b.range, owner:{active:0}, id:-1, mirror:true });   // block the way, never burst here
   for(const g of ghosts) r.bubbles.push(g);
   L.speed=S.speed; L.range=S.range; L.maxBubbles=S.maxBubbles; L.ride=S.ride;
-  L.active=d.bubbles.filter(b=>b.o===mySlot).length + ghosts.length;                                     // so the copy refuses a drop the server would refuse
-  if(S.trapped || !S.alive){ pred.mode='server'; return; }                                              // the server owns you while you are bubbled
+  L.active=d.bubbles.filter(b=>b.o===mySlot && !b.soft).length + ghosts.filter(g=>!g.soft).length;       // so the copy refuses a drop the server would refuse
+  L.ghostCd=S.ghostCd||0;
+  if(!!L.ghost !== !!S.ghost){ L.ghost=!!S.ghost; L.alive=S.alive; snapTo(L,S); }                         // you popped (or the server says you did not)
+  if(S.trapped || (!S.alive && !S.ghost)){ pred.mode='server'; return; }                                 // the server owns you while you are bubbled
   const at=(x,y,px,py)=>Math.abs(x-px)<0.01 && Math.abs(y-py)<0.01;
   const STALE=450;                                                                                      // a round trip plus a tick, with margin
   const seen=(x,y)=> at(x,y,L.tx,L.ty) || (L.moving && at(x,y,L.tox,L.toy)) || pred.hist.some(h=>at(x,y,h.x,h.y) && now-h.at<STALE);
@@ -1278,6 +1336,7 @@ function predictDraw(){
   if(!pred || pred.mode!=='local' || !players) return;
   const me=players[mySlot]; if(!me) return;
   const L=pred.w.read().players[mySlot], q=posOf(L);
+  if(!!me.ghost !== !!L.ghost) return;                                                                   // mid-change: draw the server's word
   me.rx=q.x; me.ry=q.y; me.moving=L.moving; me.dir=L.dir; me.faceX=L.faceX; me.anim=L.anim; me.fx=L.fx; me.fy=L.fy; me.tox=L.tox; me.toy=L.toy; me.t=L.t;
   for(const g of pred.w.read().bubbles) if(g.ghostAt && !bubbles.some(b=>b.x===g.x&&b.y===g.y)) bubbles.push({ x:g.x, y:g.y, fuse:g.fuse, range:g.range });   // the bubble you just dropped
 }
@@ -1296,12 +1355,13 @@ function applySnapshot(d){
     drawLag=Math.min(120, Math.max(40, (hi-lo)+8));                     // headroom = the usual jitter spread; a rare spike just extrapolates for a frame
     snaps.push({at, st:d.st, players:d.players}); if(snaps.length>12) snaps.shift();
   }
+  if(typeof d.tt==='number'){ if(d.tr!==tideRings || tideMs<0 || Math.abs(d.tt-tideMs)>250) tideMs=d.tt; tideRings=d.tr; }
   state=d.gs; winnerSlot=d.win; teamMode=!!d.tm;
   if(state==='playing') hideOverlays();
   if(d.ev) for(const e of d.ev){ const f=sfx[e]; if(f) f(); }   // game sounds from the server
   const me=players[mySlot];
-  if(d.gs==='over'){ if(!deadShown){ deadShown=true; showResult(teamMode ? (me && me.team===d.wt) : (winnerSlot===mySlot)); } }
-  else if(!teamMode && me && !me.alive && !deadShown){ deadShown=true; showResult(false); }
+  // Popping no longer ends your match: you haunt until someone wins.
+  if(d.gs==='over' && !deadShown){ deadShown=true; showResult(teamMode ? (me && me.team===d.wt) : (winnerSlot===mySlot)); }
 }
 function netSendInput(){
   if(!ws || ws.readyState!==1 || mySlot<0) return;   // host is slot 0 — also a client
@@ -1311,15 +1371,14 @@ function netSendInput(){
   // Flag it so the server spends it on exactly one step instead of steering
   // until our "stop" packet finishes the round trip.
   const tap = !!dir && !held.length;
-  const half = halfOn();
   const bomb = wantBubble; wantBubble=false;
   const now = performance.now();
   // The 120ms keep-alive must not repeat a tap: a second copy landing after the
   // server finished the step would buy another one. Taps are sent once, on the
   // transition; the "stop" packet follows when the buffer expires.
-  if(bomb || dir!==lastInDir || tap!==lastInTap || half!==lastInHalf || (!tap && now-lastInT>120)){
-    lastInDir=dir; lastInTap=tap; lastInHalf=half; lastInT=now;
-    const pkt={k:'input', dir, bomb, tap, half, seq:inSeq};
+  if(bomb || dir!==lastInDir || tap!==lastInTap || (!tap && now-lastInT>120)){
+    lastInDir=dir; lastInTap=tap; lastInT=now;
+    const pkt={k:'input', dir, bomb, tap, seq:inSeq};
     wsSend(pkt); predictInput(pkt);
   }
 }
@@ -1330,7 +1389,7 @@ function loop(ts){
   if(netRole==='off'){                    // single-player: step the local world
     if(state==='playing' && world && !paused){
       const me=players&&players[0];
-      if(me){ me.inHeld=effectiveDirArr(); me.inSeq=inSeq; me.inHalf=halfOn(); if(wantBubble) me.inBomb=true; }
+      if(me){ me.inHeld=effectiveDirArr(); me.inSeq=inSeq; if(wantBubble) me.inBomb=true; }
       wantBubble=false;
       const ev=world.update(dt);
       syncWorld();
@@ -1340,16 +1399,18 @@ function loop(ts){
       // window. Online this is the server's job instead (see the tap flag in
       // netSendInput) — doing it here as well would cancel taps it has queued.
       if(players[0] && players[0].moving) bufferDir=null;
-      if(state==='playing'){
-        if(teamMode){ if(world.gameState==='over') endGame(players.some(p=>p.alive && p.team===players[0].team)); }
-        else if(!players[0].alive) endGame(false);
-        else if(world.gameState==='over') endGame(true);
-      }
+      { const sn=world.snapshot(); tideMs=sn.tt; tideRings=sn.tr; }
+      // Popping no longer ends your match — you haunt. The result waits for the
+      // match itself to finish.
+      if(state==='playing' && world.gameState==='over')
+        endGame(teamMode ? players.some(p=>p.alive && p.team===players[0].team) : !!players[0].alive);
     }
   } else {                                // online: thin client (host & joiners alike)
-    if(state==='playing' && !paused){ netSendInput(); smoothPlayers(dt, ts); predictStep(dt); predictDraw(); }
+    if(state==='playing' && !paused){ netSendInput(); smoothPlayers(dt, ts); predictStep(dt); predictDraw();
+      if(tideMs>0) tideMs=Math.max(0, tideMs-dt*1000); }
   }
   if(state!=='start') render();
+  tideTick();
   requestAnimationFrame(loop);
 }
 

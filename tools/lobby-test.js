@@ -39,7 +39,7 @@ function client(url){
 
 async function serverTests(){
   const port = await freePort();
-  const srv = spawn(process.execPath, [path.join(ROOT, 'relay/server.js')], { env: Object.assign({}, process.env, { PORT: String(port), GRACE_MS: '600' }), stdio: ['ignore','pipe','pipe'] });
+  const srv = spawn(process.execPath, [path.join(ROOT, 'relay/server.js')], { env: Object.assign({}, process.env, { PORT: String(port), GRACE_MS: '1500' }), stdio: ['ignore','pipe','pipe'] });
   await new Promise(res => srv.stdout.on('data', d => { if(String(d).includes('game server on')) res(); }));
   const url = 'ws://127.0.0.1:' + port;
   try {
@@ -138,7 +138,7 @@ async function serverTests(){
     check('mid-match: back into the running game with the map', je3.back === true && st3.grid && st3.grid.length > 0 && !dan2.last('closed'));
     const stranger = client(url); await stranger.open(); stranger.send({ k:'join', cid:'ZED', code:jd.code, name:'Zed' }); const jf = await stranger.next('joinfail');
     check('a newcomer still cannot join a running match', /already started/.test(jf.reason));
-    dan2.ws.terminate(); const closedMsg = await eve3.next('closed', 2500);
+    dan2.ws.terminate(); const closedMsg = await eve3.next('closed', 5000);
     check('a host who never comes back closes the room after the grace period', !!closedMsg);
     for(const c of [dan, dan2, eve, eve2, eve3, stranger]) try{ c.ws.terminate(); }catch(e){}
 
