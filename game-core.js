@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v45';
+const CORE_VERSION = 'v46';
 const COLS = 19, ROWS = 17;
 const FUSE = 3.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -41,6 +41,7 @@ const DMG_OFF = 0.18;
 // after TIDE_START, from the hull inwards. Water cannot be walked on, stops a
 // blast, and drowns whoever it catches. Every match gets a shape.
 const TIDE_START = 70, TIDE_STEP = 9, TIDE_WARN = 4;   // WARN: how long a ring is marked before it goes under
+const TIDE_CHOICES = [0, 25, 70, 120];                 // what the start screen offers; 0 = the sea stays out
 // GHOSTS. Being popped used to mean watching the rest of the match. A popped
 // sailor comes back as a ghost: he drifts over walls and water, cannot be hurt
 // and cannot win, and every GHOST_CD he can leave a ghost bubble that TRAPS
@@ -184,8 +185,9 @@ function makeWorld() {
     const spice=[{move:+0.05,trap:-0.15},{move:0,trap:0},{move:-0.03,trap:+0.1}][i];
     return { move:Math.max(0.1,base.move+spice.move), trap:Math.min(1,Math.max(0,base.trap+spice.trap)), react:base.react, esc:base.esc };
   }
-  // opts.tide === false holds the sea back: unit tests that run minutes of sim
-  // time are about one rule each, and a flooding board is a second rule.
+  // opts.tide is when the bay starts to flood, in seconds — picked before the
+  // match, 0 or false for never. (Unit tests about one rule at a time pass
+  // false so a flooding board cannot be a second rule.)
   function reset(controls, colors, d, teams, mapId, opts){
     diff = d || 'normal';
     controls = controls || ['local','ai','ai','ai'];
@@ -193,7 +195,9 @@ function makeWorld() {
     teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
     buildMap(mapId);
     bubbles=[]; blasts=[]; powerups=[]; burstCounter=0; gameState='playing'; winnerSlot=-1; winnerTeam=-1; events=[]; simTime=0;
-    tideRing=0; tideNext=(opts && opts.tide===false) ? Infinity : TIDE_START;
+    tideRing=0;
+    const ts = (opts && opts.tide!=null) ? opts.tide : TIDE_START;
+    tideNext = (ts===false || !(ts>0)) ? Infinity : ts;
     const used=new Set(colors.filter(Boolean));
     const botPool=PALETTE.filter(c=>!used.has(c));
     let bi=0, bp=0;
@@ -628,7 +632,7 @@ function makeWorld() {
 }
 
 const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, TAP_HOLD, DMG_OFF, SPEED_GAIN, MAX_SPEED, MAX_RANGE, MAX_BUBBLES,
-  FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
+  FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, TIDE_CHOICES, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
   DROP_POOL, SURPRISE_POOL };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;

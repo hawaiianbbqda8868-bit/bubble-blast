@@ -297,6 +297,8 @@
         <div class="stepper"><button class="stepbtn" data-bot="-">−</button><span class="botnum">3</span><button class="stepbtn" data-bot="+">+</button></div></div>
       <div class="row"><div><div class="t">Bot skill</div><div class="d">How mean they play</div></div>
         <div class="seg"><div class="diff" data-d="easy">Easy</div><div class="diff sel" data-d="normal">Normal</div><div class="diff" data-d="hard">Hard</div></div></div>
+      <div class="row"><div><div class="t">Tide</div><div class="d">When the bay starts to flood</div></div>
+        <div class="seg tiderow"></div></div>
       <div class="row"><div style="max-width:230px"><div class="t">Teams</div><div class="d">Pop a teammate's bubble to free them</div></div>
         <div class="switch teamtoggle"></div></div>
     </div>
@@ -330,6 +332,8 @@
           <div class="stepper"><button class="stepbtn" data-bot="-">−</button><span class="botnum">3</span><button class="stepbtn" data-bot="+">+</button></div></div>
         <div class="row"><div><div class="t">Bot skill</div><div class="d">Applies to bots only</div></div>
           <div class="seg"><div class="diff" data-d="easy">Easy</div><div class="diff sel" data-d="normal">Normal</div><div class="diff" data-d="hard">Hard</div></div></div>
+        <div class="row"><div><div class="t">Tide</div><div class="d">When the bay starts to flood</div></div>
+          <div class="seg tiderow"></div></div>
         <div class="row"><div style="max-width:220px"><div class="t">Teams</div><div class="d">Everyone picks a side; bots even it out</div></div>
           <div class="switch teamtoggle"></div></div>
       </div>
@@ -396,10 +400,10 @@
   </div>
 </div>
 
-<script src="game-core.js?v45"></script>
+<script src="game-core.js?v46"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v45';
+const APP_VERSION = 'v46';
 // Last line of defence against a fresh page running an older sim: game-core.js
 // is versioned in its URL, but if the two ever disagree, throw the caches away
 // and reload once rather than play by two different sets of rules.
@@ -458,6 +462,11 @@ function sendProfile(){ if(netRole!=='off') wsSend({k:'profile', name:myName, wi
 // The map is chosen on the start screen (and remembered) — never rolled at random.
 let menuMap = (function(){ try{ const v=+localStorage.getItem('bnbMap'); return BB.MAPS[v]?v:0; }catch(e){ return 0; } })();
 const MAP_ICON = { pirate:'🏴‍☠️', stone:'🏰', ice:'❄️', lava:'🌋' };
+// When the bay starts to flood, picked before the match (0 = never). Handy for
+// a quick game, and for seeing the tide without waiting a minute for it.
+let menuTide = (function(){ try{ const raw=localStorage.getItem('bnbTide'); if(raw==null) return BB.TIDE_START;   // no setting yet is not "off"
+  const v=+raw; return BB.TIDE_CHOICES.includes(v) ? v : BB.TIDE_START; }catch(e){ return BB.TIDE_START; } })();
+const tideLabel = v => !v ? 'Off' : (v%60===0 && v>=120 ? (v/60)+'m' : v+'s');
 let teamMode = false;                        // active in the current match (set at start / from server)
 const TEAM_COLORS = ['#ff5b5b','#46c8ff'];   // Team A (red) / Team B (blue) aura rings
 function areAllies(a,b){ return teamMode && a && b && a.team!=null && a.team===b.team; }
@@ -558,7 +567,7 @@ function startGame(){ netRole='off'; mySlot=0;
   const controls=['local']; for(let i=0;i<n;i++) controls.push('ai'); while(controls.length<8) controls.push('none');
   const teams = menuTeams ? autoTeams(controls) : null;
   teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
-  world=BB.makeWorld(); world.reset(controls, [myColor], diff, teams, menuMap); syncWorld();
+  world=BB.makeWorld(); world.reset(controls, [myColor], diff, teams, menuMap, { tide:menuTide }); syncWorld();
   state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; tideDoom=-1; hideOverlays(); }
 function endGame(win){ state='over'; showResult(win); }
 
@@ -664,6 +673,13 @@ document.querySelectorAll('.diff[data-d]').forEach(el=>el.onclick=()=>{
 function syncBots(){ document.querySelectorAll('.botnum').forEach(e=>e.textContent=botCount); }
 function setBots(n){ botCount=Math.max(0,Math.min(7,n)); syncBots(); if(netRole==='host') wsSend({k:'setbots', bots:botCount}); }
 document.querySelectorAll('[data-bot]').forEach(b=>b.onclick=()=>setBots(botCount+(b.dataset.bot==='+'?1:-1)));
+function syncTidePick(){ document.querySelectorAll('.tiderow .diff').forEach(e=>e.classList.toggle('sel', +e.dataset.tide===menuTide)); }
+function setTide(v){ if(!BB.TIDE_CHOICES.includes(v)) return; menuTide=v; try{ localStorage.setItem('bnbTide',String(v)); }catch(_){}
+  syncTidePick(); if(netRole==='host') wsSend({k:'setopts', tide:menuTide}); }
+document.querySelectorAll('.tiderow').forEach(row=>{
+  BB.TIDE_CHOICES.forEach(v=>{ const b=document.createElement('div'); b.className='diff'; b.dataset.tide=v;
+    b.textContent=tideLabel(v); b.onclick=()=>setTide(v); row.appendChild(b); }); });
+syncTidePick();
 function syncMapPick(){ document.querySelectorAll('.maprow .mapcard').forEach(e=>e.classList.toggle('sel', +e.dataset.map===menuMap)); }
 function setMap(i){ if(!BB.MAPS[i]) return; menuMap=i; try{ localStorage.setItem('bnbMap',String(i)); }catch(_){}
   syncMapPick(); previewMap(i); if(netRole==='host') wsSend({k:'setmap', map:i}); }
@@ -1185,7 +1201,7 @@ function renderRoster(){
   const mp=BB.MAPS[lobby.map];
   const set=(id,v)=>{ const el=document.getElementById(id); if(el) el.innerHTML=v; };
   for(const side of ['host','join']){ set(side+'Sailors', lobby.n+' <small>/ '+lobby.cap+'</small>'); set(side+'Bots', String(lobby.bots)); set(side+'Map', mp?mp.name:'—'); }
-  set('joinSummary', (lobby.diff||'normal').replace(/^\w/,c=>c.toUpperCase())+' bots · '+(lobby.teams?'Teams':'Free for all')+' · only the host can change the rules');
+  set('joinSummary', (lobby.diff||'normal').replace(/^\w/,c=>c.toUpperCase())+' bots · '+(lobby.teams?'Teams':'Free for all')+' · tide '+tideLabel(lobby.tide==null?BB.TIDE_START:lobby.tide));
   const hs=document.getElementById('hostStart'); if(hs){ hs.disabled=!canStart(lobby.players); }
   const waiting=lobby.players.filter(p=>!p.ready||p.away).map(p=>p.name);
   const ready=canStart(lobby.players);
@@ -1210,6 +1226,7 @@ function onServerMsg(ev){
   else if(d.k==='lobby'){ lobby=d; if(typeof d.bots==='number'){ botCount=d.bots; syncBots(); }
     { const mine=d.players&&d.players.find(p=>p.slot===mySlot); if(mine) myReady=!!mine.ready; }   // the server's word on our own READY (kept across a rejoin)
     const el=document.getElementById('hostLobby'); if(el) el.textContent='Humans: '+d.n+' / '+d.cap+'   ·   Bots: '+d.bots;
+    if(typeof d.tide==='number' && d.tide!==menuTide && netRole!=='host'){ menuTide=d.tide; syncTidePick(); }
     if(netRole==='client'){ if(d.diff){ diff=d.diff; } menuTeams=!!d.teams; syncTeamToggle(); const mp=BB.MAPS[d.map]; if(mp) previewMap(d.map); }
     if(state!=='playing') renderRoster(); }
   else if(d.k==='kicked'){ giveUp('The host removed you from the room.'); }
@@ -1252,9 +1269,9 @@ function hostGame(){
   document.getElementById('hostStatus').textContent='Connecting…'; document.getElementById('roomCode').textContent='…';
   netRole='host'; mySlot=0; syncBots();
   lobby=null; myReady=false; syncReadyBtns(); document.getElementById('hostRoster').innerHTML='';
-  connectServer(()=>wsSend({k:'create', cid:myCid, color:myColor, bots:botCount, map:menuMap, teams:menuTeams, name:myName, wins:myWins}));
+  connectServer(()=>wsSend({k:'create', cid:myCid, color:myColor, bots:botCount, map:menuMap, teams:menuTeams, tide:menuTide, name:myName, wins:myWins}));
 }
-function hostStart(){ wsSend({k:'start', diff, bots:botCount, teams:menuTeams, map:menuMap}); }
+function hostStart(){ wsSend({k:'start', diff, bots:botCount, teams:menuTeams, map:menuMap, tide:menuTide}); }
 
 // ---- CLIENT (joiner) ----
 function joinGame(){

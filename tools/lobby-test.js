@@ -81,6 +81,7 @@ async function serverTests(){
     for(const c of [host2, tabA2, tabB]) c.send({ k:'setready', ready:true }); await sleep(150);   // both must press 准备 first
     host2.send({ k:'start', diff:'easy', bots:2, teams:false, map:3 }); const st = await tabB.next('start');
     const BB = require(path.join(ROOT, 'relay/game-core.js'));
+    const BB2 = BB;
     check('the game starts on that map', st.map === 3 && st.theme === BB.MAPS[3].theme, JSON.stringify([st.map, st.theme]));
     let same = true; for(let i=0;i<6;i++){ const w = BB.makeWorld(); w.reset(null, null, 'normal', null, 2); same = same && w.read().theme === BB.MAPS[2].theme; }
     check('core: reset(map) builds that map every time', same);
@@ -142,6 +143,18 @@ async function serverTests(){
     check('a host who never comes back closes the room after the grace period', !!closedMsg);
     for(const c of [dan, dan2, eve, eve2, eve3, stranger]) try{ c.ws.terminate(); }catch(e){}
 
+    console.log('server: the tide is a rule, picked before the match');
+    const ida = client(url); await ida.open(); ida.send({ k:'create', cid:'IDA', bots:1, name:'Ida', tide:25 }); const jida = await ida.next('joined');
+    await sleep(120);
+    check('the room keeps the tide the host picked', ida.last('lobby').tide === 25, `tide=${ida.last('lobby').tide}`);
+    const jon = client(url); await jon.open(); jon.send({ k:'join', cid:'JON', code:jida.code, name:'Jon' }); await jon.next('joined'); await sleep(120);
+    check('a joiner is told what it is', jon.last('lobby').tide === 25, `tide=${jon.last('lobby').tide}`);
+    ida.send({ k:'setopts', tide:0 }); await Promise.all([ida.next('lobby'), jon.next('lobby')]);
+    check('the host can turn the sea off', ida.last('lobby').tide === 0 && jon.last('lobby').tide === 0);
+    ida.send({ k:'setopts', tide:999 }); await ida.next('lobby');
+    check('a value nobody offers falls back to the default', ida.last('lobby').tide === BB2.TIDE_START, `tide=${ida.last('lobby').tide}`);
+    for(const c of [ida, jon]) try{ c.ws.terminate(); }catch(e){}
+
     console.log('server: the host can kick');
     const fay = client(url); await fay.open(); fay.send({ k:'create', cid:'FAY', color:'#f00', bots:1, name:'Fay' }); const jfay = await fay.next('joined');
     const gus = client(url); await gus.open(); gus.send({ k:'join', cid:'GUS', code:jfay.code, name:'Gus' }); const jgus = await gus.next('joined');
@@ -165,7 +178,7 @@ function clientTests(){
   const cidDecl = HTML.match(/(?:let|const|var)\s+myCid\s*=[^\n]*\n/);
   const mapDecl = HTML.match(/let\s+menuMap\s*=[^\n]*\n/);
   check('page remembers the picked map (menuMap, persisted)', !!mapDecl && /localStorage/.test(mapDecl[0]));
-  check('single-player starts on the picked map', /world\.reset\(controls, \[myColor\], diff, teams, menuMap\)/.test(HTML));
+  check('single-player starts on the picked map and tide', /world\.reset\(controls, \[myColor\], diff, teams, menuMap, \{ tide:menuTide \}\)/.test(HTML));
   check('host start sends the picked map', /k:'start'[^}]*map:menuMap/.test(HTML));
   check('both start panels have a map row', (HTML.match(/class="diffrow maprow( grid)?"/g)||[]).length === 2);
   check('host seats carry a kick button; a kicked page leaves', /data-kick=/.test(HTML) && /k:'kick', slot/.test(HTML) && /d\.k==='kicked'/.test(HTML));

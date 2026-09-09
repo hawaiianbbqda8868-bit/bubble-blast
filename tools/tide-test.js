@@ -109,6 +109,29 @@ console.log('\n1b. The ring it takes next is marked first — nobody drowns unwa
   check('the match is still going', w.gameState === 'playing', w.gameState);
 }
 
+console.log('\n1c. When the tide comes is a rule you pick before the match\n');
+{
+  check('the start screen offers a handful of choices, one of them off', Array.isArray(BB.TIDE_CHOICES) && BB.TIDE_CHOICES.includes(0) && BB.TIDE_CHOICES.includes(BB.TIDE_START), JSON.stringify(BB.TIDE_CHOICES));
+  const early = BB.TIDE_CHOICES.find(v => v > 0 && v < BB.TIDE_START) || 25;
+  const w = BB.makeWorld();
+  w.reset(new Array(8).fill('none').map((c, i) => i < 2 ? 'local' : c), ['#fff'], 'normal', null, 0, { tide: early });
+  const r = w.read();
+  for (let y = 1; y < BB.ROWS - 1; y++) for (let x = 1; x < BB.COLS - 1; x++) r.grid[y][x] = BB.FLOOR;
+  [r.players[0], r.players[1]].forEach((p, i) => { p.tx = p.fx = p.tox = BB.MIDX + i * 2; p.ty = p.fy = p.toy = BB.MIDY; p.moving = false; });
+  const run = secs => { for (let i = 0; i < Math.round(secs / DT); i++) w.update(DT); };
+  run(early - 2);
+  eq(`nothing yet at ${early - 2}s`, water(r), 0);
+  run(2.3);
+  check(`the bay floods on the ${early}s setting, not the default`, water(r) > 0 && w.snapshot().tr === 1, `${water(r)} tiles`);
+
+  const off = BB.makeWorld();
+  off.reset(new Array(8).fill('none').map((c, i) => i < 2 ? 'local' : c), ['#fff'], 'normal', null, 0, { tide: 0 });
+  const ro = off.read();
+  for (let i = 0; i < Math.round((BB.TIDE_START + 30) / DT); i++) off.update(DT);
+  eq('and Off means the sea never comes in', water(ro), 0);
+  eq('with no countdown to show', off.snapshot().tt, -1);
+}
+
 console.log('\n2. Water is not a place you can be\n');
 {
   const { w, r, put, run } = arena(2);
@@ -233,6 +256,7 @@ console.log('\n9. The page shows it\n');
 {
   check('water tiles are drawn', /function drawWater\(/.test(HTML) && /grid\[y\]\[x\]===WATER/.test(HTML));
   check('the tide clock and warning are on screen', /id="hudTide"/.test(HTML) && /id="tideWarn"/.test(HTML));
+  check('both setup panels let you pick when it comes', (HTML.match(/class="seg tiderow"/g) || []).length === 2 && /TIDE_CHOICES/.test(HTML));
   check('ghosts are drawn see-through, under the living', /if\(!p\.ghost\) continue;/.test(HTML) && /globalAlpha/.test(HTML));
   check('the DROP button becomes a haunt button', /classList\.toggle\('splash'/.test(HTML) && /HAUNT/.test(HTML));
   check('the result waits for the match, not for your own pop', !/!me\.alive && !deadShown/.test(HTML));
