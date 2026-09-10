@@ -85,7 +85,7 @@ function play({ online, script, rttMs = 0, speed = 0, runMs = 3000, frameMs = FR
     const wsSend = o => ctx.send(o);
     const mashEscape = () => {};
     const smoothPlayers = () => {}; let paused = false; const predictStep = () => {}, predictDraw = () => {}, predictInput = () => {};
-    const render = () => {}, tideTick = () => {};
+    const render = () => {}, tideTick = () => {}, musicPulse = () => {};
     let tideMs = -1, tideRings = 0;
     ${CLIENT_SRC}
     return { loop, pressDir, releaseDir, syncWorld,

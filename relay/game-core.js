@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v52';
+const CORE_VERSION = 'v53';
 const COLS = 19, ROWS = 17;
 const FUSE = 3.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -50,6 +50,9 @@ const TIDE_START = 70, TIDE_STEP = 9, TIDE_WARN = 4;
 const SURGE_LANES = 5, SURGE_MIN_LANES = 2, SURGE_STEP = 0.45, SURGE_FAST = 0.015, SURGE_MIN = 0.30;
 const TIDE_CHOICES = [0, 25, 70, 120];                 // when the first wall comes; 0 = the sea stays out
 const TIDE_GAPS = [5, 9, 15];                          // and how long the calm is between them
+// A match is a series: first to more than half of these rounds takes it.
+const ROUND_CHOICES = [1, 3, 5];
+const roundsToWin = n => Math.floor((ROUND_CHOICES.includes(n) ? n : 1) / 2) + 1;
 // GHOSTS. Being popped used to mean watching the rest of the match. A popped
 // sailor comes back as a ghost: he drifts over walls and water, cannot be hurt
 // and cannot win, and every GHOST_CD he can leave a ghost bubble that TRAPS
@@ -753,7 +756,7 @@ function makeWorld() {
 }
 
 const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, TAP_HOLD, DMG_OFF, SPEED_GAIN, MAX_SPEED, MAX_RANGE, MAX_BUBBLES,
-  FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, TIDE_CHOICES, TIDE_GAPS, SURGE_LANES, SURGE_MIN_LANES, SURGE_STEP, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PU_BOAT, PU_PLANE, RIDE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
+  ROUND_CHOICES, roundsToWin, FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, TIDE_CHOICES, TIDE_GAPS, SURGE_LANES, SURGE_MIN_LANES, SURGE_STEP, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PU_BOAT, PU_PLANE, RIDE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
   DROP_POOL, SURPRISE_POOL };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;

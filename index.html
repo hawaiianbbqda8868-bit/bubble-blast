@@ -213,6 +213,12 @@
   #pauseScreen { z-index:55; }
   /* 07 result */
   .kicker { font:800 15px Nunito,sans-serif; letter-spacing:6px; color:var(--teal); }
+  .seriesbar { display:flex; flex-wrap:wrap; justify-content:center; gap:14px; margin-top:14px; }
+  .seriesbar[hidden] { display:none; }
+  .tally { display:flex; align-items:center; gap:5px; }
+  .tally i { width:14px; height:14px; border-radius:50%; border:2px solid #06161f; }
+  .tally .pip2 { width:9px; height:9px; border-radius:50%; background:rgba(255,255,255,.16); }
+  .tally .pip2.on { background:var(--gold); }
   .result { font:800 56px 'Baloo 2',sans-serif; line-height:1.05; color:var(--gold); margin-top:6px; }
   .result.lose { color:#ff7a7a; }
   .resultsub { font:700 15px Nunito,sans-serif; color:var(--mut); margin-top:8px; }
@@ -302,6 +308,8 @@
         <div class="seg tiderow"></div></div>
       <div class="row"><div><div class="t">Waves</div><div class="d">The calm between them</div></div>
         <div class="seg gaprow"></div></div>
+      <div class="row"><div><div class="t">Rounds</div><div class="d">First past half of them wins</div></div>
+        <div class="seg roundrow"></div></div>
       <div class="row"><div style="max-width:230px"><div class="t">Teams</div><div class="d">Pop a teammate's bubble to free them</div></div>
         <div class="switch teamtoggle"></div></div>
     </div>
@@ -339,6 +347,8 @@
           <div class="seg tiderow"></div></div>
         <div class="row"><div><div class="t">Waves</div><div class="d">The calm between them</div></div>
           <div class="seg gaprow"></div></div>
+        <div class="row"><div><div class="t">Rounds</div><div class="d">First past half of them wins</div></div>
+          <div class="seg roundrow"></div></div>
         <div class="row"><div style="max-width:220px"><div class="t">Teams</div><div class="d">Everyone picks a side; bots even it out</div></div>
           <div class="switch teamtoggle"></div></div>
       </div>
@@ -398,6 +408,7 @@
       <div class="kicker">MATCH OVER</div>
       <div class="result" id="resultText">YOU WIN!</div>
       <div class="resultsub" id="resultSub"></div>
+      <div class="seriesbar" id="seriesBar" hidden></div>
     </div>
     <div class="ranking" id="ranking"></div>
     <div class="rankcard"><div class="t" id="rankTitle"></div><div class="bar"><i id="rankBar" style="width:0"></i></div><div class="d" id="rankNext"></div></div>
@@ -405,10 +416,10 @@
   </div>
 </div>
 
-<script src="game-core.js?v52"></script>
+<script src="game-core.js?v53"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v52';
+const APP_VERSION = 'v53';
 // Last line of defence against a fresh page running an older sim: game-core.js
 // is versioned in its URL, but if the two ever disagree, throw the caches away
 // and reload once rather than play by two different sets of rules.
@@ -496,6 +507,10 @@ const tideLabel = v => !v ? 'Off' : (v%60===0 && v>=120 ? (v/60)+'m' : v+'s');
 // How long the calm lasts between one wall and the next.
 let menuGap = (function(){ try{ const raw=localStorage.getItem('bnbGap'); if(raw==null) return BB.TIDE_STEP;
   const v=+raw; return BB.TIDE_GAPS.includes(v) ? v : BB.TIDE_STEP; }catch(e){ return BB.TIDE_STEP; } })();
+// A match is a series of rounds; the tally carries between them.
+let menuRounds = (function(){ try{ const raw=localStorage.getItem('bnbRounds'); if(raw==null) return 5;
+  const v=+raw; return BB.ROUND_CHOICES.includes(v) ? v : 5; }catch(e){ return 5; } })();
+const roundLabel = v => v===1 ? 'One' : 'Best of '+v;
 let teamMode = false;                        // active in the current match (set at start / from server)
 const TEAM_COLORS = ['#ff5b5b','#46c8ff'];   // Team A (red) / Team B (blue) aura rings
 function areAllies(a,b){ return teamMode && a && b && a.team!=null && a.team===b.team; }
@@ -517,35 +532,145 @@ let last = 0;
 // networking (server-authoritative; host & joiners are both thin clients)
 let netRole='off', mySlot=0, ws=null, roomCode='', winnerSlot=-1, deadShown=false, netTick=0;
 
-// ====================== AUDIO (tiny WebAudio) ======================
-let actx=null;
-function beep(freq, dur, type, vol){
-  if(muted) return;
+// ====================== AUDIO ======================
+// One AudioContext, a small synth kit, and a loop that grows a layer at a time.
+let actx=null, master=null, musicBus=null, sfxBus=null, noiseBuf=null;
+function audio(){
+  if(actx) return actx;
   try{
-    actx = actx || new (window.AudioContext||window.webkitAudioContext)();
-    const o=actx.createOscillator(), g=actx.createGain();
-    o.type=type||'square'; o.frequency.value=freq;
-    g.gain.value=(vol||0.05); o.connect(g); g.connect(actx.destination);
-    o.start(); g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime+(dur||0.1));
-    o.stop(actx.currentTime+(dur||0.1)+0.02);
-  }catch(e){}
+    actx = new (window.AudioContext||window.webkitAudioContext)();
+    master = actx.createGain(); master.gain.value = muted ? 0 : 0.9; master.connect(actx.destination);
+    musicBus = actx.createGain(); musicBus.gain.value = 0.34; musicBus.connect(master);
+    sfxBus = actx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    const n = actx.sampleRate * 0.6; noiseBuf = actx.createBuffer(1, n, actx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for(let i=0;i<n;i++) d[i] = (Math.random()*2-1) * (1 - i/n);      // a short decaying hiss, for splashes and thumps
+  }catch(e){ actx=null; }
+  return actx;
 }
+// browsers hold the context asleep until the player touches something
+function wakeAudio(){ const a=audio(); if(a && a.state==='suspended') a.resume(); }
+addEventListener('pointerdown', wakeAudio, { passive:true });
+addEventListener('keydown', wakeAudio);
+function setMuted(v){ muted=v; if(master) master.gain.setTargetAtTime(v?0:0.9, actx.currentTime, 0.02); }
+
+// --- the kit -------------------------------------------------------------
+// t: when, f: pitch, dur: length, type: waveform, vol, to: pitch to glide to
+function tone(t, f, dur, type, vol, to){
+  const a=audio(); if(!a) return;
+  const o=a.createOscillator(), g=a.createGain();
+  o.type=type||'square'; o.frequency.setValueAtTime(f, t);
+  if(to) o.frequency.exponentialRampToValueAtTime(Math.max(20,to), t+dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t+0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t+dur);
+  o.connect(g); g.connect(sfxBus); o.start(t); o.stop(t+dur+0.03);
+}
+function noise(t, dur, vol, freq, q){
+  const a=audio(); if(!a) return;
+  const src=a.createBufferSource(); src.buffer=noiseBuf;
+  const f=a.createBiquadFilter(); f.type='bandpass'; f.frequency.setValueAtTime(freq, t); f.Q.value=q||1;
+  const g=a.createGain();
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t+0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t+dur);
+  src.connect(f); f.connect(g); g.connect(sfxBus); src.start(t); src.stop(t+dur+0.02);
+}
+const now = () => (audio() ? actx.currentTime : 0);
 const sfx = {
-  place:()=>beep(520,0.08,'sine',0.05),
-  burst:()=>{beep(150,0.18,'sawtooth',0.07); beep(90,0.22,'square',0.05);},
-  power:()=>{beep(660,0.07,'square',0.06); setTimeout(()=>beep(990,0.09,'square',0.06),70);},
-  trap:()=>beep(300,0.15,'sine',0.06),
-  ride:()=>{beep(300,0.09,'square',0.06); setTimeout(()=>beep(620,0.12,'square',0.06),80);},
-  surprise:()=>[660,880,660,1046].forEach((f,i)=>setTimeout(()=>beep(f,0.07,'square',0.05),i*70)),
-  push:()=>beep(120,0.09,'sawtooth',0.05),
-  pop:()=>{beep(420,0.1,'square',0.07); setTimeout(()=>beep(180,0.16,'sawtooth',0.06),60);},
-  free:()=>{beep(700,0.08,'sine',0.06); setTimeout(()=>beep(1050,0.12,'sine',0.06),70);},
-  win:()=>[523,659,784,1046].forEach((f,i)=>setTimeout(()=>beep(f,0.18,'square',0.06),i*140)),
-  lose:()=>[392,330,262].forEach((f,i)=>setTimeout(()=>beep(f,0.22,'sawtooth',0.06),i*160)),
-  tide:()=>{beep(70,0.5,'sine',0.07); setTimeout(()=>beep(55,0.6,'sine',0.06),120);},   // the sea comes in
-  ghost:()=>[440,330,262,196].forEach((f,i)=>setTimeout(()=>beep(f,0.16,'sine',0.05),i*90)),
+  place:  ()=>{ const t=now(); tone(t, 700, 0.10, 'sine', 0.16, 380); },
+  burst:  ()=>{ const t=now(); noise(t, 0.28, 0.34, 900, 0.7); noise(t, 0.34, 0.30, 220, 0.9); tone(t, 190, 0.20, 'triangle', 0.14, 70); },
+  power:  ()=>{ const t=now(); [0,1,2].forEach(i=>tone(t+i*0.055, 620*Math.pow(1.26,i), 0.10, 'square', 0.11)); },
+  trap:   ()=>{ const t=now(); tone(t, 300, 0.22, 'sine', 0.16, 620); noise(t, 0.16, 0.14, 1600, 2); },
+  free:   ()=>{ const t=now(); [0,1].forEach(i=>tone(t+i*0.07, 740*Math.pow(1.5,i), 0.14, 'sine', 0.14)); },
+  pop:    ()=>{ const t=now(); tone(t, 520, 0.07, 'square', 0.16, 900); noise(t+0.03, 0.42, 0.34, 500, 0.6); tone(t+0.03, 150, 0.30, 'triangle', 0.12, 60); },
+  push:   ()=>{ const t=now(); noise(t, 0.16, 0.18, 300, 1.4); },
+  ride:   ()=>{ const t=now(); tone(t, 280, 0.10, 'sawtooth', 0.11, 420); tone(t+0.09, 560, 0.14, 'square', 0.10); },
+  surprise:()=>{ const t=now(); [0,1,2,3].forEach(i=>tone(t+i*0.06, [660,880,784,1175][i], 0.09, 'square', 0.11)); },
+  ghost:  ()=>{ const t=now(); tone(t, 520, 0.7, 'sine', 0.10, 160); noise(t, 0.5, 0.07, 700, 0.5); },
+  tide:   ()=>{ const t=now(); noise(t, 1.1, 0.22, 300, 0.4); noise(t+0.15, 1.0, 0.16, 900, 0.5); tone(t, 90, 0.9, 'sine', 0.10, 55); },
+  win:    ()=>{ const t=now(); [0,2,4,7].forEach((k,i)=>tone(t+i*0.13, 440*Math.pow(2,k/12), 0.26, 'square', 0.13)); },
+  lose:   ()=>{ const t=now(); [0,-2,-5].forEach((k,i)=>tone(t+i*0.16, 392*Math.pow(2,k/12), 0.30, 'sawtooth', 0.12)); },
 };
 
+// --- the music -----------------------------------------------------------
+// One bar of a pentatonic groove, played by five parts. Nothing plays at level
+// 0; each level adds the next part on top of the ones already going, so the
+// music thickens as the match does — the additive rhythm 泡泡堂 built its
+// soundtrack on. The level follows how far along the round is and how few
+// sailors are left, and the tide adds its own part while a wall is out.
+const MUS = {
+  bpm: 116, step: 0, timer: null, next: 0, level: 0, want: 0, on: false, key: 0,
+  // 16 sixteenths to a bar
+  kick:  [1,0,0,0, 0,0,1,0, 0,0,1,0, 0,0,0,0],
+  hat:   [0,0,1,0, 1,0,0,1, 0,0,1,0, 1,0,1,1],
+  bass:  [0,null,null,null, 3,null,null,null, 5,null,null,null, 3,null,null,null],
+  lead:  [7,null,9,null, 12,null,9,null, 7,null,5,null, 7,null,null,null],
+  bell:  [null,null,null,12, null,null,16,null, null,null,null,14, null,12,null,null],
+};
+const PENTA = [0,3,5,7,10,12,15,17,19,22,24];                        // minor pentatonic, in semitones
+const noteHz = n => 220 * Math.pow(2, (PENTA[n%PENTA.length] + 12*Math.floor(n/PENTA.length) + MUS.key) / 12);
+function musNote(t, f, dur, type, vol, bus){
+  const a=audio(); if(!a) return;
+  const o=a.createOscillator(), g=a.createGain();
+  o.type=type; o.frequency.setValueAtTime(f, t);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t+0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t+dur);
+  o.connect(g); g.connect(bus||musicBus); o.start(t); o.stop(t+dur+0.03);
+}
+function musDrum(t, kind){
+  const a=audio(); if(!a) return;
+  if(kind==='kick'){
+    const o=a.createOscillator(), g=a.createGain();
+    o.type='sine'; o.frequency.setValueAtTime(120, t); o.frequency.exponentialRampToValueAtTime(45, t+0.12);
+    g.gain.setValueAtTime(0.5, t); g.gain.exponentialRampToValueAtTime(0.0001, t+0.16);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t+0.2);
+  } else {
+    const src=a.createBufferSource(); src.buffer=noiseBuf;
+    const f=a.createBiquadFilter(); f.type='highpass'; f.frequency.value=6500;
+    const g=a.createGain(); g.gain.setValueAtTime(0.13, t); g.gain.exponentialRampToValueAtTime(0.0001, t+0.045);
+    src.connect(f); f.connect(g); g.connect(musicBus); src.start(t); src.stop(t+0.06);
+  }
+}
+function musStep(){
+  const a=audio(); if(!a || !MUS.on) return;
+  const spb = 60/MUS.bpm/4;                                          // one sixteenth
+  // The context sleeps until the first touch, and its clock sleeps with it. On
+  // waking, pick up from now instead of firing every sixteenth we "missed".
+  if(MUS.next < a.currentTime - spb) MUS.next = a.currentTime + 0.02;
+  while(MUS.next < a.currentTime + 0.12){
+    const t = Math.max(MUS.next, a.currentTime + 0.01), i = MUS.step % 16, L = MUS.level;
+    if(L>=1 && MUS.kick[i]) musDrum(t,'kick');
+    if(L>=2 && MUS.hat[i])  musDrum(t,'hat');
+    if(L>=3 && MUS.bass[i]!=null) musNote(t, noteHz(MUS.bass[i])/2, 0.20, 'triangle', 0.30);
+    if(L>=4 && MUS.lead[i]!=null) musNote(t, noteHz(MUS.lead[i]), 0.16, 'square', 0.13);
+    if(L>=5 && MUS.bell[i]!=null) musNote(t, noteHz(MUS.bell[i])*2, 0.28, 'sine', 0.10);
+    if(MUS.surge && i%4===2) musNote(t, noteHz(1)/2, 0.12, 'sawtooth', 0.10);   // the sea has a part of its own
+    MUS.next += spb; MUS.step++;
+    if(MUS.step % 16 === 0 && MUS.level < MUS.want) MUS.level++;      // parts join on the bar, never mid-phrase
+    if(MUS.step % 16 === 0 && MUS.level > MUS.want) MUS.level--;
+  }
+}
+function musicStart(){
+  const a=audio(); if(!a) return;
+  MUS.on = true; MUS.step = 0; MUS.level = 1; MUS.want = 1; MUS.surge = false;
+  MUS.key = [0,2,5,7][Math.floor(Math.random()*4)];                  // a different key each round
+  MUS.next = a.currentTime + 0.08;
+  if(!MUS.timer) MUS.timer = setInterval(musStep, 40);
+}
+function musicStop(){ MUS.on = false; if(MUS.timer){ clearInterval(MUS.timer); MUS.timer = null; } }
+// How thick the music is: it grows through the round, and again when the board
+// thins out or the tide is on its way.
+function musicPulse(){
+  if(!MUS.on || state!=='playing') return;
+  const alive = (players||[]).filter(p=>p && p.alive).length;
+  const secs = MUS.step * (60/MUS.bpm/4);
+  let want = 1 + Math.min(2, Math.floor(secs/22));                   // time alone gets you to three parts
+  if(alive && alive<=3) want++;
+  if(alive && alive<=2) want++;
+  MUS.want = Math.max(1, Math.min(5, want));
+  MUS.surge = !!(tideDoom && tideDoom.length);
+}
 // ====================== HELPERS ======================
 const key = (x,y)=> x+','+y;
 
@@ -562,13 +687,19 @@ function hideOverlays(){                 // called on every snapshot: must leave
   document.getElementById('overScreen').classList.add('hidden');
 }
 function showResult(win){
+  musicStop();
   recordGame(win); paused=false; document.getElementById('pauseScreen').classList.add('hidden');
   const r=document.getElementById('resultText');
   r.textContent = win ? 'YOU WIN!' : 'POPPED';
   r.className = 'result '+(win?'win':'lose');
   const mp=BB.MAPS.find(m=>m.theme===theme), inMatch=(players||[]).filter(p=>p && (p.alive || p.control!=='none'));
   const sailors=(players||[]).filter(p=>p && p.isHuman!==undefined && !(p.control==='none' && !p.alive));
-  document.getElementById('resultSub').textContent=(mp?mp.name:'')+' · '+sailors.length+' sailors';
+  const tail = series && series.rounds>1
+    ? (series.done ? ' · series to '+(series.tm ? TEAM_NAMES[series.champ] : (series.champ===mySlot ? 'you' : playerName((players||[])[series.champ]) || 'them'))
+                   : ' · round '+series.round+' of '+series.rounds)
+    : '';
+  document.getElementById('resultSub').textContent=(mp?mp.name:'')+' · '+sailors.length+' sailors'+tail;
+  renderSeries();
   // standing: survivors first (the winner on top), then the popped, by seat
   const me=mySlot, rows=sailors.slice().sort((a,b)=>(b.alive-a.alive)||(a.slot===me?-1:b.slot===me?1:0)||(a.slot-b.slot));
   const esc=v=>String(v).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -591,14 +722,16 @@ function syncWorld(){                    // the sim's live state, straight into 
   grid=r.grid; players=r.players; bubbles=r.bubbles; blasts=r.blasts; powerups=r.powerups;
   decor=r.decor; theme=r.theme; shipCenter=r.shipCenter;
 }
-function startGame(){ netRole='off'; mySlot=0;
+function startGame(nextRound){ netRole='off'; mySlot=0;
+  if(!nextRound || !series || series.rounds!==menuRounds) series=freshSeries(menuRounds);
+  series.round++;
   const n=Math.max(1,Math.min(7,botCount));            // single-player needs at least 1 bot
   const controls=['local']; for(let i=0;i<n;i++) controls.push('ai'); while(controls.length<8) controls.push('none');
   const teams = menuTeams ? autoTeams(controls) : null;
   teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
   world=BB.makeWorld(); world.reset(controls, [myColor], diff, teams, menuMap, { tide:menuTide, gap:menuGap }); syncWorld();
-  state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; tideDoom=[]; hideOverlays(); }
-function endGame(win){ state='over'; showResult(win); }
+  musicStart(); state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; tideDoom=[]; hideOverlays(); }
+function endGame(win){ state='over'; if(netRole==='off') scoreLocalRound(); showResult(win); }
 
 // ====================== INPUT ======================
 const held=[]; let wantBubble=false, bufferDir=null, bufferT=0, inSeq=0;
@@ -692,7 +825,7 @@ document.getElementById('playBtn').onclick=startGame;
 document.getElementById('againBtn').onclick=function(){
   if(netRole==='host') hostStart();
   else if(netRole==='client'){ document.getElementById('overScreen').classList.add('hidden'); }
-  else startGame();
+  else startGame(series && !series.done);          // next round, or a fresh series once one is decided
 };
 document.querySelectorAll('.diff[data-d]').forEach(el=>el.onclick=()=>{
   diff=el.dataset.d;
@@ -703,12 +836,18 @@ function syncBots(){ document.querySelectorAll('.botnum').forEach(e=>e.textConte
 function setBots(n){ botCount=Math.max(0,Math.min(7,n)); syncBots(); if(netRole==='host') wsSend({k:'setbots', bots:botCount}); }
 document.querySelectorAll('[data-bot]').forEach(b=>b.onclick=()=>setBots(botCount+(b.dataset.bot==='+'?1:-1)));
 function syncTidePick(){ document.querySelectorAll('.tiderow .diff').forEach(e=>e.classList.toggle('sel', +e.dataset.tide===menuTide));
-  document.querySelectorAll('.gaprow .diff').forEach(e=>e.classList.toggle('sel', +e.dataset.gap===menuGap)); }
+  document.querySelectorAll('.gaprow .diff').forEach(e=>e.classList.toggle('sel', +e.dataset.gap===menuGap));
+  document.querySelectorAll('.roundrow .diff').forEach(e=>e.classList.toggle('sel', +e.dataset.rounds===menuRounds)); }
 function setGap(v){ if(!BB.TIDE_GAPS.includes(v)) return; menuGap=v; try{ localStorage.setItem('bnbGap',String(v)); }catch(_){}
   syncTidePick(); if(netRole==='host') wsSend({k:'setopts', gap:menuGap}); }
 document.querySelectorAll('.gaprow').forEach(row=>{
   BB.TIDE_GAPS.forEach(v=>{ const b=document.createElement('div'); b.className='diff'; b.dataset.gap=v;
     b.textContent=v+'s'; b.onclick=()=>setGap(v); row.appendChild(b); }); });
+function setRounds(v){ if(!BB.ROUND_CHOICES.includes(v)) return; menuRounds=v; try{ localStorage.setItem('bnbRounds',String(v)); }catch(_){}
+  syncTidePick(); if(netRole==='host') wsSend({k:'setopts', rounds:menuRounds}); }
+document.querySelectorAll('.roundrow').forEach(row=>{
+  BB.ROUND_CHOICES.forEach(v=>{ const b=document.createElement('div'); b.className='diff'; b.dataset.rounds=v;
+    b.textContent=v===1?'One':v; b.onclick=()=>setRounds(v); row.appendChild(b); }); });
 function setTide(v){ if(!BB.TIDE_CHOICES.includes(v)) return; menuTide=v; try{ localStorage.setItem('bnbTide',String(v)); }catch(_){}
   syncTidePick(); if(netRole==='host') wsSend({k:'setopts', tide:menuTide}); }
 document.querySelectorAll('.tiderow').forEach(row=>{
@@ -726,7 +865,7 @@ syncMapPick();
 function syncTeamToggle(){ document.querySelectorAll('.teamtoggle').forEach(e=>e.classList.toggle('sel', menuTeams)); }
 document.querySelectorAll('.teamtoggle').forEach(e=>e.onclick=()=>{ menuTeams=!menuTeams; try{ localStorage.setItem('bnbTeams', menuTeams?'1':'0'); }catch(_){}; syncTeamToggle(); if(netRole==='host') wsSend({k:'setopts', teams:menuTeams}); });
 syncTeamToggle();
-document.getElementById('mute').onclick=function(){ muted=!muted; this.textContent=muted?'🔇':'🔊'; };
+document.getElementById('mute').onclick=function(){ wakeAudio(); setMuted(!muted); this.textContent=muted?'🔇':'🔊'; };
 
 // ---- start-screen mode switching ----
 function showPanel(id){
@@ -769,6 +908,7 @@ document.getElementById('overMenu').onclick=()=>toMenu();
 
 // ---- back-to-menu + online room browser ----
 function toMenu(){
+  musicStop();
   stopBrowse(); leaveNet(); state='start'; paused=false; document.getElementById('pauseScreen').classList.add('hidden');
   document.getElementById('overScreen').classList.add('hidden');
   document.getElementById('startScreen').classList.remove('hidden');
@@ -1225,6 +1365,32 @@ function applyMap(m){ grid=m.grid.map(s=>s.split('').map(Number)); decor=new Map
 
 // ---- the waiting room (泡泡堂-style): seats, 准备 READY, and a side to pick with teams on ----
 let lobby=null, myReady=false;
+// A match is a series of rounds — the tally lives here, and the server owns it online.
+let series=null;
+function freshSeries(rounds){ return { rounds, need:BB.roundsToWin(rounds), round:0, wins:new Array(8).fill(0), teamWins:[0,0], tm:false, done:false, champ:-1 }; }
+function scoreLocalRound(){
+  if(!series || !world) return;
+  const sn=world.snapshot();
+  series.tm=!!sn.tm;
+  if(sn.tm){ if(sn.wt===0||sn.wt===1) series.teamWins[sn.wt]++; }
+  else if(sn.win>=0) series.wins[sn.win]++;
+  const best = series.tm ? Math.max(series.teamWins[0],series.teamWins[1]) : Math.max(...series.wins);
+  series.done = best >= series.need;
+  series.champ = !series.done ? -1 : (series.tm ? (series.teamWins[0]>series.teamWins[1]?0:1) : series.wins.indexOf(best));
+}
+function renderSeries(){
+  const el=document.getElementById('seriesBar'), kick=document.querySelector('#overScreen .kicker'), again=document.getElementById('againBtn');
+  if(!series || series.rounds<=1){ el.hidden=true; kick.textContent='MATCH OVER'; again.textContent='PLAY AGAIN'; return; }
+  const items = series.tm
+    ? [0,1].map(t=>({ name:TEAM_NAMES[t], color:TEAM_COLORS[t], n:series.teamWins[t] }))
+    : (players||[]).filter(p=>p && (p.alive || p.ghost || p.control!=='none'))
+        .map(p=>({ name:playerName(p), color:p.capColor, n:series.wins[p.slot]|0 }));
+  el.hidden = !items.length;
+  el.innerHTML = items.map(it=>'<div class="tally" title="'+String(it.name).replace(/"/g,'')+'"><i style="background:'+it.color+'"></i>'
+    + Array.from({length:series.need},(_,k)=>'<span class="pip2'+(k<it.n?' on':'')+'"></span>').join('') + '</div>').join('');
+  kick.textContent = series.done ? 'SERIES OVER' : 'ROUND '+series.round+' OF '+series.rounds;
+  again.textContent = series.done ? 'PLAY AGAIN' : 'NEXT ROUND ▶';
+}
 const TEAM_NAMES=['Red','Blue'];
 // The host may only start once every human has pressed READY (alone with bots, just start).
 function canStart(players){ return !players || players.length<2 || players.every(p=>p.ready); }
@@ -1267,7 +1433,7 @@ function renderRoster(){
   const mp=BB.MAPS[lobby.map];
   const set=(id,v)=>{ const el=document.getElementById(id); if(el) el.innerHTML=v; };
   for(const side of ['host','join']){ set(side+'Sailors', lobby.n+' <small>/ '+lobby.cap+'</small>'); set(side+'Bots', String(lobby.bots)); set(side+'Map', mp?mp.name:'—'); }
-  set('joinSummary', (lobby.diff||'normal').replace(/^\w/,c=>c.toUpperCase())+' bots · '+(lobby.teams?'Teams':'Free for all')+' · tide '+tideLabel(lobby.tide==null?BB.TIDE_START:lobby.tide)+(lobby.tide ? ' every '+(lobby.gap==null?BB.TIDE_STEP:lobby.gap)+'s' : ''));
+  set('joinSummary', (lobby.diff||'normal').replace(/^\w/,c=>c.toUpperCase())+' bots · '+(lobby.teams?'Teams':'Free for all')+' · tide '+tideLabel(lobby.tide==null?BB.TIDE_START:lobby.tide)+(lobby.tide ? ' every '+(lobby.gap==null?BB.TIDE_STEP:lobby.gap)+'s' : '')+' · '+roundLabel(lobby.rounds==null?5:lobby.rounds).toLowerCase());
   const hs=document.getElementById('hostStart'); if(hs){ hs.disabled=!canStart(lobby.players); }
   const waiting=lobby.players.filter(p=>!p.ready||p.away).map(p=>p.name);
   const ready=canStart(lobby.players);
@@ -1293,14 +1459,16 @@ function onServerMsg(ev){
     { const mine=d.players&&d.players.find(p=>p.slot===mySlot); if(mine) myReady=!!mine.ready; }   // the server's word on our own READY (kept across a rejoin)
     const el=document.getElementById('hostLobby'); if(el) el.textContent='Humans: '+d.n+' / '+d.cap+'   ·   Bots: '+d.bots;
     if(netRole!=='host'){ let ch=false; if(typeof d.tide==='number' && d.tide!==menuTide){ menuTide=d.tide; ch=true; }
-      if(typeof d.gap==='number' && d.gap!==menuGap){ menuGap=d.gap; ch=true; } if(ch) syncTidePick(); }
+      if(typeof d.gap==='number' && d.gap!==menuGap){ menuGap=d.gap; ch=true; }
+      if(typeof d.rounds==='number' && d.rounds!==menuRounds){ menuRounds=d.rounds; ch=true; } if(ch) syncTidePick(); }
     if(netRole==='client'){ if(d.diff){ diff=d.diff; } menuTeams=!!d.teams; syncTeamToggle(); const mp=BB.MAPS[d.map]; if(mp) previewMap(d.map); }
     if(state!=='playing') renderRoster(); }
   else if(d.k==='kicked'){ giveUp('The host removed you from the room.'); }
+  else if(d.k==='series'){ series=d; if(state==='over') renderSeries(); }
   else if(d.k==='notready'){ document.getElementById('hostStatus').textContent='Not yet — waiting for READY: '+(d.waiting||[]).join(', '); }
   else if(d.k==='joinfail'){ if(roomCode && state!=='start'){ giveUp(d.reason||'Could not get back in.'); return; }
     document.getElementById('joinStatus').textContent=d.reason||'Could not join.'; netRole='off'; showJoinRoom(false); }
-  else if(d.k==='start'){ applyMap(d); snaps=[]; snapLag=[]; drawLag=40; simOff=null; teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; tideDoom=[]; hideOverlays(); predictInit(d); }
+  else if(d.k==='start'){ applyMap(d); snaps=[]; snapLag=[]; drawLag=40; simOff=null; teamMode=!!d.tm; state='playing'; deadShown=false; winnerSlot=-1; tideMs=-1; tideRings=0; tideDoom=[]; hideOverlays(); musicStart(); predictInit(d); }
   else if(d.k==='state'){ applySnapshot(d); }
   else if(d.k==='closed'){ if(netRole!=='off' && state!=='start'){ toMenu(); document.getElementById('joinStatus').textContent='Host left — room closed.'; } }
 }
@@ -1336,9 +1504,9 @@ function hostGame(){
   document.getElementById('hostStatus').textContent='Connecting…'; document.getElementById('roomCode').textContent='…';
   netRole='host'; mySlot=0; syncBots();
   lobby=null; myReady=false; syncReadyBtns(); document.getElementById('hostRoster').innerHTML='';
-  connectServer(()=>wsSend({k:'create', cid:myCid, color:myColor, bots:botCount, map:menuMap, teams:menuTeams, tide:menuTide, gap:menuGap, name:myName, wins:myWins}));
+  connectServer(()=>wsSend({k:'create', cid:myCid, color:myColor, bots:botCount, map:menuMap, teams:menuTeams, tide:menuTide, gap:menuGap, rounds:menuRounds, name:myName, wins:myWins}));
 }
-function hostStart(){ wsSend({k:'start', diff, bots:botCount, teams:menuTeams, map:menuMap, tide:menuTide, gap:menuGap}); }
+function hostStart(){ wsSend({k:'start', diff, bots:botCount, teams:menuTeams, map:menuMap, tide:menuTide, gap:menuGap, rounds:menuRounds}); }
 
 // ---- CLIENT (joiner) ----
 function joinGame(){
@@ -1510,7 +1678,7 @@ function loop(ts){
       if(tideMs>0) tideMs=Math.max(0, tideMs-dt*1000); }
   }
   if(state!=='start') render();
-  tideTick();
+  tideTick(); musicPulse();
   requestAnimationFrame(loop);
 }
 

@@ -166,6 +166,29 @@ async function serverTests(){
     check('and it falls back the same way', ida.last('lobby').gap === BB2.TIDE_STEP, `gap=${ida.last('lobby').gap}`);
     for(const c of [ida, jon]) try{ c.ws.terminate(); }catch(e){}
 
+    console.log('server: a match is a series of rounds');
+    const kim = client(url); await kim.open(); kim.send({ k:'create', cid:'KIM', bots:0, name:'Kim', rounds:3, tide:0 });   // alone: the round is decided the moment it starts const jkim = await kim.next('joined');
+    await sleep(120);
+    check('the room keeps the rounds the host picked', kim.last('lobby').rounds === 3, `rounds=${kim.last('lobby').rounds}`);
+    kim.send({ k:'setopts', rounds:5 }); await kim.next('lobby');
+    check('the host can change it in the lobby', kim.last('lobby').rounds === 5, `rounds=${kim.last('lobby').rounds}`);
+    kim.send({ k:'setopts', rounds:3 }); await kim.next('lobby');
+    const winRound = async () => {                    // one sailor on the board: the round is hers at once
+      const startP = kim.next('start'), openP = kim.next('series');
+      kim.send({ k:'start' }); await startP; await openP;
+      return await kim.next('series', 8000);          // the broadcast made when the round is scored
+    };
+    const s1 = await winRound();
+    check('a round win goes on the board', s1.wins.reduce((a, b) => a + b, 0) === 1, JSON.stringify(s1.wins));
+    check('and it knows how many it takes', s1.need === 2 && s1.rounds === 3, `need ${s1.need} of ${s1.rounds}`);
+    check('the series is not over yet', s1.done === false);
+    const s2 = await winRound();
+    check('the tally carries into the next round', s2.wins.reduce((a, b) => a + b, 0) === 2, JSON.stringify(s2.wins));
+    check('two of three ends it', s2.done === true && s2.champ >= 0, `champ=${s2.champ}`);
+    const s3 = await winRound();
+    check('starting again after that is a fresh series', s3.wins.reduce((a, b) => a + b, 0) === 1 && s3.round === 1, JSON.stringify(s3.wins));
+    for(const c of [kim]) try{ c.ws.terminate(); }catch(e){}
+
     console.log('server: the host can kick');
     const fay = client(url); await fay.open(); fay.send({ k:'create', cid:'FAY', color:'#f00', bots:1, name:'Fay' }); const jfay = await fay.next('joined');
     const gus = client(url); await gus.open(); gus.send({ k:'join', cid:'GUS', code:jfay.code, name:'Gus' }); const jgus = await gus.next('joined');

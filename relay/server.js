@@ -24,6 +24,25 @@ const N_SLOTS = BB.MAX_SLOTS; // 8
 function pickMap(v){ const i = v|0; return BB.MAPS[i] ? i : 0; }   // a known map index, never a roll
 function pickTide(v){ const t = v|0; return BB.TIDE_CHOICES.includes(t) ? t : BB.TIDE_START; }   // when the first wall comes, 0 = never
 function pickGap(v){ const g = v|0; return BB.TIDE_GAPS.includes(g) ? g : BB.TIDE_STEP; }        // and the calm between them
+function pickRounds(v){ const r = v|0; return BB.ROUND_CHOICES.includes(r) ? r : 5; }            // best of how many
+// The series so far: a round win each to the last sailor standing (or the
+// surviving team), and it is over when someone has more than half the rounds.
+function seriesInfo(room){
+  const need = BB.roundsToWin(room.rounds);
+  const best = room.teamMode ? Math.max(room.teamWins[0], room.teamWins[1]) : Math.max(0, ...room.wins);
+  const done = best >= need;
+  let champ = -1;
+  if(done) champ = room.teamMode ? (room.teamWins[0] > room.teamWins[1] ? 0 : 1) : room.wins.indexOf(best);
+  return { k:'series', rounds:room.rounds, need, round:room.round, wins:room.wins.slice(), teamWins:room.teamWins.slice(),
+           tm:!!room.teamMode, done, champ };
+}
+function scoreRound(room){
+  const w = room.world;
+  if(room.teamMode){ if(w.winnerTeam===0 || w.winnerTeam===1) room.teamWins[w.winnerTeam]++; }
+  else if(w.winnerSlot >= 0) room.wins[w.winnerSlot]++;
+  broadcast(room, seriesInfo(room));
+}
+function newSeries(room){ room.wins = new Array(N_SLOTS).fill(0); room.teamWins = [0,0]; room.round = 0; }
 // The waiting room, as everyone sees it: every seat, who is ready, which team
 // they picked, and the host's settings. Like 泡泡堂: players press 准备, only the
 // host presses 开始, and only once every human is ready.
@@ -31,7 +50,7 @@ function lobbyInfo(room){
   const players = room.conns.map(c => ({ slot:c.slot, name:c.name, color:c.color, wins:c.wins|0, ready:!!c.ready, team:c.team, host:c.slot===0, away:!!c.away }))
     .sort((a,b) => a.slot-b.slot);
   return { k:'lobby', code:room.code, n:room.conns.length, bots:room.bots, cap:N_SLOTS-room.bots, state:room.state,
-           map:room.map, diff:room.diff, teams:!!room.teamMode, tide:room.tide, gap:room.gap, players };
+           map:room.map, diff:room.diff, teams:!!room.teamMode, tide:room.tide, gap:room.gap, rounds:room.rounds, players };
 }
 function allReady(room){ return room.conns.length < 2 || room.conns.every(c => c.ready && !c.away); }
 function notReady(room){ return room.conns.filter(c => !c.ready || c.away).map(c => c.name); }
@@ -56,12 +75,14 @@ function buildControls(room){
     for(let s=0;s<N_SLOTS;s++) if(controls[s]==='ai'){ const t = size[0] <= size[1] ? 0 : 1; teams[s]=t; size[t]++; } } // bots even it out
   return { controls, colors, teams };
 }
-function beginGame(room){
+function beginGame(room, nextRound){
+  if(!nextRound) newSeries(room);                    // a fresh series unless this is the next round of one
   const { controls, colors, teams } = buildControls(room);
   room.world = BB.makeWorld();
   room.world.reset(controls, colors, room.diff||'normal', teams, room.map, { tide:room.tide, gap:room.gap });
-  room.state = 'playing';
-  broadcast(room, Object.assign({ k:'start', tm:!!room.teamMode }, room.world.mapMsg()));
+  room.state = 'playing'; room.round++;
+  broadcast(room, Object.assign({ k:'start', tm:!!room.teamMode, round:room.round, rounds:room.rounds }, room.world.mapMsg()));
+  broadcast(room, seriesInfo(room));
   startTick(room);
 }
 function startTick(room){
@@ -69,7 +90,7 @@ function startTick(room){
   room.tick = setInterval(() => {
     room.world.update(DT);
     broadcast(room, Object.assign({ k:'state' }, room.world.snapshot()));
-    if(room.world.gameState === 'over'){ room.state='over'; clearInterval(room.tick); room.tick=null; }
+    if(room.world.gameState === 'over'){ room.state='over'; clearInterval(room.tick); room.tick=null; scoreRound(room); }
   }, TICK_MS);
 }
 // One seat per device. A tablet that taps Join twice, or comes back after Safari
@@ -112,7 +133,8 @@ wss.on('connection', (ws) => {
     }
     if (m.k === 'create') {
       let code; do { code = makeCode(); } while (rooms.has(code));
-      const room = { code, conns:[], state:'lobby', world:null, tick:null, diff:'normal', teamMode:!!m.teams, bots:Math.min(7,Math.max(0, m.bots==null?3:m.bots)), map:pickMap(m.map), tide:pickTide(m.tide==null?BB.TIDE_START:m.tide), gap:pickGap(m.gap==null?BB.TIDE_STEP:m.gap) };
+      const room = { code, conns:[], state:'lobby', world:null, tick:null, diff:'normal', teamMode:!!m.teams, bots:Math.min(7,Math.max(0, m.bots==null?3:m.bots)), map:pickMap(m.map), tide:pickTide(m.tide==null?BB.TIDE_START:m.tide), gap:pickGap(m.gap==null?BB.TIDE_STEP:m.gap),
+        rounds:pickRounds(m.rounds==null?5:m.rounds), wins:new Array(N_SLOTS).fill(0), teamWins:[0,0], round:0 };
       rooms.set(code, room);
       seat(room, ws, m, 0);
       return;
@@ -150,14 +172,17 @@ wss.on('connection', (ws) => {
       if (m.map != null) room.map = pickMap(m.map);
       if (m.tide != null) room.tide = pickTide(m.tide);
       if (m.gap != null) room.gap = pickGap(m.gap);
+      if (m.rounds != null) { room.rounds = pickRounds(m.rounds); newSeries(room); }
       if (m.bots != null) room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots|0));
       broadcast(room, lobbyInfo(room)); } return; }
     if (m.k === 'setmap') { if (ws.slot === 0 && room.state === 'lobby') { room.map = pickMap(m.map); broadcast(room, lobbyInfo(room)); } return; }
     if (m.k === 'setbots') { if (ws.slot === 0 && room.state === 'lobby') { room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots||0)); broadcast(room, lobbyInfo(room)); } return; }
     if (m.k === 'start' || m.k === 'restart') { if (ws.slot === 0) {
-      if (m.bots!=null) room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots)); if (m.teams!=null) room.teamMode = !!m.teams; if (m.map!=null) room.map = pickMap(m.map); if (m.tide!=null) room.tide = pickTide(m.tide); if (m.gap!=null) room.gap = pickGap(m.gap); room.diff = m.diff || room.diff;
+      if (m.bots!=null) room.bots = Math.min(N_SLOTS - room.conns.length, Math.max(0, m.bots)); if (m.teams!=null) room.teamMode = !!m.teams; if (m.map!=null) room.map = pickMap(m.map); if (m.tide!=null) room.tide = pickTide(m.tide); if (m.gap!=null) room.gap = pickGap(m.gap); if (m.rounds!=null && m.rounds!==room.rounds) { room.rounds = pickRounds(m.rounds); newSeries(room); } room.diff = m.diff || room.diff;
       if (room.state === 'lobby' && !allReady(room)) { send(ws, { k:'notready', waiting:notReady(room) }); return; }   // 开始 only when everyone pressed 准备 (and is here)
-      beginGame(room); } return; }
+      // A finished series starts a new one; a round still to play carries the tally on.
+      const carry = room.state === 'over' && !seriesInfo(room).done;
+      beginGame(room, carry); } return; }
     if (m.k === 'input') { if (room.world && room.state === 'playing') room.world.setInput(ws.slot, { dir:m.dir, bomb:m.bomb, tap:m.tap, half:m.half, seq:m.seq }); return; }
   });
   ws.on('close', () => {

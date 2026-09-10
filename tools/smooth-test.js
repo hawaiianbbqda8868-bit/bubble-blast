@@ -41,7 +41,7 @@ function run({ online, script, rtt = 0, jitter = 0, speed = 0, runMs = 2500, see
     ${grabLet(/(?:let|const)\s+snaps\s*=[^\n]*\n/)}
     ${grabLet(/let\s+snapLag\s*=[^\n]*\n/)}
     function syncWorld(){ const r = ctx.world.read(); players = r.players; }
-    const render = () => {}, tideTick = () => {};
+    const render = () => {}, tideTick = () => {}, musicPulse = () => {};
     let tideMs = -1, tideRings = 0;
     ${SRC}
     return { loop, pressDir, releaseDir, snapshot: d => applySnapshot(d), predictInit: m => predictInit(m), drop: () => { wantBubble = true; }, nb: () => (bubbles || []).length, pos: () => { const q = drawPos(players[0]); return q.x + 1000 * q.y; } };`)(ctx);
