@@ -11,7 +11,7 @@
 
 // Bumped with the game rules. The relay reports it on its health URL, so you can
 // check which rules the server is actually running: curl the relay's address.
-const CORE_VERSION = 'v53';
+const CORE_VERSION = 'v54';
 const COLS = 19, ROWS = 17;
 const FUSE = 3.0, BLAST_TIME = 0.5, TRAP_TIME = 3.0, ESCAPE_NEED = 1.0, BASE_MOVE = 0.20;
 // How long a direction must be held before the sailor starts WALKING. Anything
@@ -52,6 +52,10 @@ const TIDE_CHOICES = [0, 25, 70, 120];                 // when the first wall co
 const TIDE_GAPS = [5, 9, 15];                          // and how long the calm is between them
 // A match is a series: first to more than half of these rounds takes it.
 const ROUND_CHOICES = [1, 3, 5];
+// Walk into a bubble — anyone's — and you KICK it: it slides on across the deck
+// until a wall, a barrel, another bubble, the sea or a sailor stops it. Every
+// bubble is a weapon at range now, and a corridor is a terrible place to stand.
+const KICK_STEP = 0.075;                               // seconds a kicked bubble spends on each tile
 const roundsToWin = n => Math.floor((ROUND_CHOICES.includes(n) ? n : 1) / 2) + 1;
 // GHOSTS. Being popped used to mean watching the rest of the match. A popped
 // sailor comes back as a ghost: he drifts over walls and water, cannot be hurt
@@ -166,7 +170,7 @@ function rollFrom(pool){                            // weighted pick
 
 function makeWorld() {
   let grid, players, bubbles, blasts, powerups, decor, theme, shipCenter;
-  let burstCounter = 0, gameState = 'lobby', winnerSlot = -1, diff = 'normal';
+  let burstCounter = 0, bubbleSeq = 0, gameState = 'lobby', winnerSlot = -1, diff = 'normal';
   let teamMode = false, winnerTeam = -1, simTime = 0, mapIdx = 0;
   let tideWave = 0, tideNext = TIDE_START, doomed = [], tideOn = true, tideGap = TIDE_STEP;   // surges so far, when the next comes, and the line it takes next
   let surge = null, pending = null;                                      // the wall crossing the board, and the one being lined up
@@ -267,7 +271,7 @@ function makeWorld() {
     colors = colors || [];
     teamMode = Array.isArray(teams) && teams.some(t=>t!=null);
     buildMap(mapId);
-    bubbles=[]; blasts=[]; powerups=[]; burstCounter=0; gameState='playing'; winnerSlot=-1; winnerTeam=-1; events=[]; simTime=0;
+    bubbles=[]; blasts=[]; powerups=[]; burstCounter=0; bubbleSeq=0; gameState='playing'; winnerSlot=-1; winnerTeam=-1; events=[]; simTime=0;
     tideWave=0; doomed=[]; surge=null; pending=null;
     const ts = (opts && opts.tide!=null) ? opts.tide : TIDE_START;
     tideOn = !(ts===false || !(ts>0));
@@ -296,12 +300,35 @@ function makeWorld() {
     if(!inB(x,y) || bubbleAt(x,y)) return;
     if(p.ghost){                                   // a ghost bubble only ever traps
       if(p.ghostCd>0 || grid[y][x]===WATER) return;
-      bubbles.push({x,y,fuse:FUSE,range:GHOST_RANGE,owner:p,soft:true});
+      bubbles.push({id:++bubbleSeq,x,y,px:x,py:y,t:1,dx:0,dy:0,fuse:FUSE,range:GHOST_RANGE,owner:p,soft:true});
       p.ghostCd=GHOST_CD; events.push('place'); return;
     }
     if(p.active>=p.maxBubbles || grid[y][x]!==FLOOR) return;
-    bubbles.push({x,y,fuse:FUSE,range:p.range,owner:p});
+    bubbles.push({id:++bubbleSeq,x,y,px:x,py:y,t:1,dx:0,dy:0,fuse:FUSE,range:p.range,owner:p});
     p.active++; events.push('place');
+  }
+  // Somewhere a kicked bubble may roll to: clear floor, nobody standing there.
+  function rollable(x,y){
+    if(!inB(x,y) || grid[y][x]!==FLOOR || bubbleAt(x,y)) return false;
+    for(const p of players){ if(!p.alive || p.ghost) continue; const t=tileOf(p); if(t.x===x && t.y===y) return false; }
+    return true;
+  }
+  function kickBubble(b, dx, dy){
+    if(b.dx||b.dy) return;                                  // already rolling
+    if(!rollable(b.x+dx, b.y+dy)) return;                   // nothing to roll into
+    b.dx=dx; b.dy=dy; b.px=b.x; b.py=b.y; b.t=0; b.x+=dx; b.y+=dy;   // it owns the next tile straight away
+    events.push('kick');
+  }
+  function rollBubbles(dt){
+    for(const b of bubbles){
+      if(!(b.dx||b.dy)) continue;
+      b.t += dt/KICK_STEP;
+      while(b.t>=1){
+        b.px=b.x; b.py=b.y; b.t-=1;
+        if(rollable(b.x+b.dx, b.y+b.dy)){ b.x+=b.dx; b.y+=b.dy; }
+        else { b.dx=0; b.dy=0; b.t=1; break; }               // it fetched up against something
+      }
+    }
   }
   function burst(b){
     const id=++burstCounter, cells=blastCells(b.x,b.y,b.range);
@@ -501,6 +528,8 @@ function makeWorld() {
     if(dir && (committed || leaning)){ const [dx,dy]=DIRV[dir];
       const nx = p.tx+dx, ny = p.ty+dy;
       if(!leaning && !p.ghost && p.control!=='ai' && inB(nx,ny) && grid[ny][nx]===CRATE) pushCrate(p,nx,ny,dx,dy);
+      const inTheWay = p.ghost ? null : bubbleAt(nx,ny);
+      if(inTheWay && !leaning) kickBubble(inTheWay, dx, dy);                  // walk into a bubble and it rolls
       if(p.ghost ? inB(nx,ny) : tileOk(p,nx,ny)){                            // a ghost drifts through anything
         p.moving=true; p.fx=p.tx; p.fy=p.ty; p.tox=nx; p.toy=ny; p.t=0; p.dir=dir;
         p.stepLen=1; p.tentative=leaning;
@@ -594,6 +623,7 @@ function makeWorld() {
       }
     }                                    // stamps snapshots, so a client can draw them evenly however they arrive
     for(const b of bubbles) b.fuse-=dt;
+    rollBubbles(dt);
     let popped=true;
     while(popped){ popped=false;
       for(let i=bubbles.length-1;i>=0;i--){ if(bubbles[i].fuse<=0){ const b=bubbles.splice(i,1)[0]; if(!b.soft && b.owner.active>0) b.owner.active--; burst(b); popped=true; } }
@@ -744,7 +774,8 @@ function makeWorld() {
         trapped:p.trapped,trapTimer:p.trapTimer,struggle:p.struggle,
         range:p.range,maxBubbles:p.maxBubbles,speed:p.speed,ride:p.ride,isHuman:p.isHuman,capColor:p.capColor,anim:p.anim,team:p.team,
         md:(p.isHuman?moveDur(p):botMoveDur(p)),color:SKIN,colorLight:SKIN_LT})),
-      bubbles: bubbles.map(b=>({x:b.x,y:b.y,fuse:b.fuse,range:b.range,o:b.owner?b.owner.slot:-1,soft:!!b.soft})),   // o: whose, so a client can count its own
+      bubbles: bubbles.map(b=>({id:b.id,x:b.x,y:b.y,rx:b.px+(b.x-b.px)*b.t,ry:b.py+(b.y-b.py)*b.t,   // rx,ry: where it is mid-roll
+        fuse:b.fuse,range:b.range,o:b.owner?b.owner.slot:-1,soft:!!b.soft})),
       blasts: blasts.map(b=>({x:b.x,y:b.y,timer:b.timer,soft:!!b.soft})),
       powerups: powerups.map(p=>({x:p.x,y:p.y,type:p.type})) };
   }
@@ -756,7 +787,7 @@ function makeWorld() {
 }
 
 const API = { makeWorld, CORE_VERSION, COLS, ROWS, FUSE, BLAST_TIME, TRAP_TIME, ESCAPE_NEED, BASE_MOVE, TAP_HOLD, DMG_OFF, SPEED_GAIN, MAX_SPEED, MAX_RANGE, MAX_BUBBLES,
-  ROUND_CHOICES, roundsToWin, FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, TIDE_CHOICES, TIDE_GAPS, SURGE_LANES, SURGE_MIN_LANES, SURGE_STEP, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PU_BOAT, PU_PLANE, RIDE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
+  ROUND_CHOICES, roundsToWin, KICK_STEP, FLOOR, WALL, BARREL, CRATE, WATER, TIDE_START, TIDE_STEP, TIDE_WARN, TIDE_CHOICES, TIDE_GAPS, SURGE_LANES, SURGE_MIN_LANES, SURGE_STEP, GHOST_CD, GHOST_RANGE, PU_RANGE, PU_BUBBLE, PU_SPEED, PU_CAR, PU_TURTLE, PU_SURPRISE, PU_BOAT, PU_PLANE, RIDE, PALETTE, DIRV, SKIN, SKIN_LT, MAX_SLOTS, SPAWNS, MIDX, MIDY, MAPS, THEMES,
   DROP_POOL, SURPRISE_POOL };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (root) root.BB = API;

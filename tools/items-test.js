@@ -177,6 +177,82 @@ console.log('\n4b. The boat floats, the plane flies\n');
   check('lose the boat at sea and you go under with it', !p.alive, `alive=${p.alive} ride=${p.ride}`);
 }
 
+console.log('\n4b2. Kick the bubble\n');
+// Walk into a bubble and it rolls on until something stops it. A bubble in a
+// corridor is a weapon at range, and a bubble in your way is an opportunity.
+const kickArena = () => {
+  const a = arena('local');
+  a.r.bubbles.length = 0;
+  return a;
+};
+const rollTo = (w, b, ticks = 200) => { let n = 0; while ((b.dx || b.dy) && n < ticks) { w.update(FRAME); n++; } return n * FRAME; };
+const drop = (r, x, y, owner) => { const b = { id: 900 + r.bubbles.length, x, y, px:x, py:y, t:1, dx:0, dy:0, fuse: 99, range: 2, owner }; r.bubbles.push(b); return b; };
+{
+  const { w, r, p } = kickArena();
+  const x = p.tx, y = p.ty;
+  const b = drop(r, x + 1, y, p);
+  stepOnce(w, p, 'right');
+  check('walking into it sets it rolling', (b.dx || b.dy) !== 0 || b.x > x + 1, `at ${b.x},${b.y}`);
+  const took = rollTo(w, b);
+  check('it runs to the far wall', b.x === BB.COLS - 2 && b.y === y, `stopped at ${b.x},${b.y}`);
+  check('and it gets there faster than a sailor could', took < (BB.COLS - 2 - x) * BB.BASE_MOVE, `${took.toFixed(2)}s for ${BB.COLS - 2 - x} tiles`);
+}
+{
+  const { w, r, p } = kickArena();
+  const x = p.tx, y = p.ty;
+  r.grid[y][x + 4] = BB.BARREL;
+  const b = drop(r, x + 1, y, p);
+  stepOnce(w, p, 'right'); rollTo(w, b);
+  eq('a barrel stops it', [b.x, b.y], [x + 3, y]);
+  eq('and the barrel is still standing', r.grid[y][x + 4], BB.BARREL);
+}
+{
+  const { w, r, p } = kickArena();
+  const x = p.tx, y = p.ty;
+  const still = drop(r, x + 5, y, p);
+  const b = drop(r, x + 1, y, p);
+  stepOnce(w, p, 'right'); rollTo(w, b);
+  eq('another bubble stops it', [b.x, b.y], [x + 4, y]);
+  eq('which has not moved', [still.x, still.y], [x + 5, y]);
+}
+{
+  const { w, r, p } = kickArena();
+  const q = r.players[1];
+  const x = p.tx, y = p.ty;
+  q.tx = q.fx = q.tox = x + 5; q.ty = q.fy = q.toy = y; q.moving = false;
+  const b = drop(r, x + 1, y, p);
+  stepOnce(w, p, 'right'); rollTo(w, b);
+  eq('a sailor stops it', [b.x, b.y], [x + 4, y]);
+  check('and is not hurt by it', q.alive === true && !q.trapped);
+}
+{
+  const { w, r, p } = kickArena();
+  const x = p.tx, y = p.ty;
+  r.grid[y][x + 3] = BB.WATER;
+  const b = drop(r, x + 1, y, p);
+  stepOnce(w, p, 'right'); rollTo(w, b);
+  eq('it will not roll into the sea', [b.x, b.y], [x + 2, y]);
+}
+{
+  const { w, r, p } = kickArena();
+  const x = p.tx, y = p.ty;
+  const b = drop(r, x + 1, y, p);
+  b.fuse = 0.05;
+  const before = p.active;
+  stepOnce(w, p, 'right');
+  for (let i = 0; i < 12; i++) w.update(FRAME);
+  check('one that bursts mid-roll bursts where it got to', r.bubbles.indexOf(b) === -1 && r.blasts.length > 0, `${r.blasts.length} blast cells`);
+  eq('kicking costs the owner nothing', p.active, before);
+}
+{
+  const { w, r, p } = kickArena();
+  const x = p.tx, y = p.ty;
+  const b = drop(r, x + 1, y, p);
+  r.grid[y][x + 2] = BB.BARREL;
+  stepOnce(w, p, 'right');
+  check('a bubble with nowhere to go stays put, and still blocks you', b.x === x + 1 && p.tx === x, `bubble ${b.x},${b.y} player ${p.tx},${p.ty}`);
+}
+
 console.log('\n4c. Every map is one board, not two\n');
 // A map that walls a spawn off from the others would strand whoever drew that
 // corner. Barrels do not count as walls here — you can always bomb through one.

@@ -40,6 +40,7 @@ function run({ online, script, rtt = 0, jitter = 0, speed = 0, runMs = 2500, see
     const hideOverlays = () => {}, showResult = () => {};
     ${grabLet(/(?:let|const)\s+snaps\s*=[^\n]*\n/)}
     ${grabLet(/let\s+snapLag\s*=[^\n]*\n/)}
+    let bdraw = new Map();
     function syncWorld(){ const r = ctx.world.read(); players = r.players; }
     const render = () => {}, tideTick = () => {}, musicPulse = () => {};
     let tideMs = -1, tideRings = 0;
@@ -129,10 +130,12 @@ console.log('\n7. No drifting: a fast relay clock with jitter, and a bubble that
   const mv = r.frames.filter(f => f.t > 700 && f.t < 3300);
   const back = mv.filter(f => f.d < -1e-6).length, jump = mv.filter(f => f.d > 0.2).length, frozen = mv.filter(f => f.d === 0).length;
   check('remote sailor, relay clock 2% fast + jitter: steady walk', back === 0 && jump === 0 && frozen <= 2, `frozen ${frozen}, backwards ${back}, jumps ${jump} over ${mv.length} frames`); }
-{ const r = run({ online: true, rtt: 120, predict: true, script: [[0, 'right', 1200]], runMs: 2200,
-    srvActs: [[330, w => { const b = w.read().bubbles; b.push({ x: BB.MIDX + 2, y: BB.MIDY, fuse: 99, range: 1, owner: { active: 0 } }); }]] });
+{ // something appears in your path that the copy cannot know about — a crate
+  // shoved into place, say. You end where the server says, not where the copy guessed.
+  const r = run({ online: true, rtt: 120, predict: true, script: [[0, 'right', 1200]], runMs: 2200,
+    srvActs: [[330, w => { w.read().grid[BB.MIDY][BB.MIDX + 2] = BB.BARREL; }]] });
   const off = r.frames.reduce((a, f) => a + f.d, 0);
-  check('a bubble dropped in your path by someone else: you end where the server put you', Math.abs(off - 1) < 0.02 && r.frames.slice(-15).every(f => f.d === 0), `drawn offset ${off.toFixed(2)} tiles`); }
+  check('a block appears in your path: you end where the server put you', Math.abs(off - 1) < 0.02 && r.frames.slice(-15).every(f => f.d === 0), `drawn offset ${off.toFixed(2)} tiles`); }
 
 console.log('\n6. A dropped bubble shows at once and never blinks out\n');
 for (const rtt of [120, 250]) {

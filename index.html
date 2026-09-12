@@ -416,10 +416,10 @@
   </div>
 </div>
 
-<script src="game-core.js?v53"></script>
+<script src="game-core.js?v54"></script>
 <script>
 // ====================== CONFIG ======================
-const APP_VERSION = 'v53';
+const APP_VERSION = 'v54';
 // Last line of defence against a fresh page running an older sim: game-core.js
 // is versioned in its URL, but if the two ever disagree, throw the caches away
 // and reload once rather than play by two different sets of rules.
@@ -1251,9 +1251,9 @@ function render(){
   }
   // bubbles
   for(const b of bubbles){
-    const px=b.x*TILE+TILE/2, py=b.y*TILE+TILE/2;
-    const pulse=1+Math.sin(performance.now()/90)*0.06*(1-b.fuse/FUSE);
-    const r=TILE*0.42*pulse;
+    const bp=bubblePos(b), px=bp.x*TILE+TILE/2, py=bp.y*TILE+TILE/2;
+    const pulse=1+Math.sin(performance.now()/90)*0.06*Math.max(0,Math.min(1,1-b.fuse/FUSE));
+    const r=Math.max(2, TILE*0.42*pulse);          // never let an odd fuse hand arc() a negative radius
     if(b.soft){                                        // a ghost's: it only ever traps
       ctx.save(); ctx.globalAlpha=0.75;
       ctx.fillStyle='rgba(200,230,255,.30)'; ctx.beginPath(); ctx.arc(px,py,r,0,7); ctx.fill();
@@ -1526,6 +1526,15 @@ function joinGame(){
 // delay adapts to the link: one tick of headroom on a clean one, up to the worst
 // recent lateness on a jittery one.
 let snapLag=[], drawLag=40, simOff=null;              // arrival - sim time, recent; how far behind to draw; sim clock -> ours
+// A kicked bubble is between tiles: live objects carry px/py/t, snapshots carry
+// rx/ry, and online we lerp those between the two snapshots we draw between.
+let bdraw=new Map();
+function bubblePos(b){
+  if(b.px!=null) return { x:b.px+(b.x-b.px)*(b.t==null?1:b.t), y:b.py+(b.y-b.py)*(b.t==null?1:b.t) };
+  const d=(b.id!=null) && bdraw.get(b.id);
+  if(d) return d;
+  return { x:(b.rx!=null?b.rx:b.x), y:(b.ry!=null?b.ry:b.y) };
+}
 let snaps=[];                                         // the last few snapshots, with arrival times
 function posOf(p){ return p.moving ? {x:p.fx+(p.tox-p.fx)*p.t, y:p.fy+(p.toy-p.fy)*p.t} : {x:p.tx, y:p.ty}; }
 function stepAhead(p, ms){                            // where a snapshot's sailor is `ms` later if his step carries on
@@ -1542,6 +1551,13 @@ function smoothPlayers(dt, now){
   const rs=now-simOff-drawLag;                        // the sim moment we draw, in sim time
   let a=null, b=null;
   for(const s of snaps){ if(s.st<=rs) a=s; else { b=s; break; } }
+  bdraw.clear();
+  if(a){                                               // bubbles roll between tiles too
+    const byId=new Map(); if(b && b.bubbles) for(const q of b.bubbles) byId.set(q.id,q);
+    const f = (a&&b) ? (rs-a.st)/Math.max(1,b.st-a.st) : 0;
+    for(const q of (a.bubbles||[])){ const q2=byId.get(q.id);
+      bdraw.set(q.id, q2 ? { x:q.rx+(q2.rx-q.rx)*f, y:q.ry+(q2.ry-q.ry)*f } : { x:q.rx, y:q.ry }); }
+  }
   for(let i=0;i<players.length;i++){
     const p=players[i]; if(!p) continue;
     let q;
@@ -1621,7 +1637,7 @@ function applySnapshot(d){
     // between neighbours, which showed as sailors drifting and catching up.
     simOff = simOff==null ? lo : simOff + (lo-simOff)*0.15;
     drawLag=Math.min(120, Math.max(40, (hi-lo)+8));                     // headroom = the usual jitter spread; a rare spike just extrapolates for a frame
-    snaps.push({at, st:d.st, players:d.players}); if(snaps.length>12) snaps.shift();
+    snaps.push({at, st:d.st, players:d.players, bubbles:d.bubbles}); if(snaps.length>12) snaps.shift();
   }
   if(typeof d.tt==='number'){ if(d.tr!==tideRings || tideMs<0 || Math.abs(d.tt-tideMs)>250) tideMs=d.tt; tideRings=d.tr; tideDoom=Array.isArray(d.tw)?d.tw:[]; }
   state=d.gs; winnerSlot=d.win; teamMode=!!d.tm;
